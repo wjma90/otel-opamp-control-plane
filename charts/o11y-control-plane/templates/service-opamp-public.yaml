@@ -1,0 +1,24 @@
+{{- if .Values.opampPublicService.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "o11y-control-plane.fullname" . }}-opamp-public
+  labels:
+    {{- include "o11y-control-plane.labels" . | nindent 4 }}
+  {{- with .Values.opampPublicService.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.opampPublicService.type }}
+  selector:
+    {{- include "o11y-control-plane.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http-opamp
+      port: {{ .Values.opampPublicService.port }}
+      targetPort: http-opamp
+      protocol: TCP
+      {{- with .Values.opampPublicService.nodePort }}
+      nodePort: {{ . }}
+      {{- end }}
+{{- end }}

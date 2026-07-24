@@ -1,0 +1,147 @@
+replicaCount: 1
+revisionHistoryLimit: 3
+
+image:
+  repository: ghcr.io/example/o11y-control-plane
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+selectorLabels: {}
+
+podAnnotations: {}
+podLabels: {}
+automountServiceAccountToken: false
+
+istio:
+  sidecarInjection: false
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  annotations: {}
+  uiPort: 8080
+  opampPort: 4320
+
+opampPublicService:
+  enabled: false
+  type: NodePort
+  annotations: {}
+  port: 4320
+  nodePort: 0
+
+opampTls:
+  # TLS nativo del listener OpAMP :4320; independiente de cualquier Ingress.
+  enabled: false
+  existingSecret: ""
+  certKey: tls.crt
+  privateKeyKey: tls.key
+
+config:
+  opampAuthMode: disabled
+  serverPublicURL: http://localhost:8080
+  opampPublicURL: http://localhost:4320/v1/opamp
+  trustedProxyCIDRs: 127.0.0.0/8,::1/128
+  collectorValidatorVersion: "0.156.0"
+
+database:
+  existingSecret: o11y-control-plane-secrets
+  urlKey: DATABASE_URL
+
+auth:
+  master:
+    existingSecret: o11y-control-plane-secrets
+    usernameKey: MASTER_USERNAME
+    passwordKey: MASTER_PASSWORD
+  signing:
+    existingSecret: o11y-control-plane-signing
+    key: signing.key
+  opampToken:
+    existingSecret: ""
+    key: CONTROL_TOKEN
+
+saml:
+  enabled: false
+  existingSecret: ""
+  certKey: tls.crt
+  privateKeyKey: tls.key
+  certManager:
+    enabled: false
+    createIssuer: true
+    secretName: ""
+    commonName: o11y-control-plane-saml-sp
+    duration: 43800h
+    renewBefore: 720h
+    privateKey:
+      algorithm: RSA
+      encoding: PKCS1
+      size: 3072
+      rotationPolicy: Never
+    issuerRef:
+      name: ""
+      kind: Issuer
+      group: cert-manager.io
+
+validator:
+  hostfs:
+    enabled: true
+    mountPath: /hostfs
+    sizeLimit: ""
+
+tmp:
+  enabled: true
+  mountPath: /tmp
+  sizeLimit: 64Mi
+  medium: ""
+
+probes:
+  readiness:
+    enabled: true
+    path: /readyz
+    initialDelaySeconds: 2
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 6
+  liveness:
+    enabled: true
+    path: /healthz
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 96Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
+extraEnv: []
+extraEnvFrom: []
+extraVolumes: []
+extraVolumeMounts: []

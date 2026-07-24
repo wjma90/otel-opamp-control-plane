@@ -1,0 +1,621 @@
+name: Control Plane release
+
+on:
+  pull_request:
+  push:
+    tags:
+      - v*
+  workflow_dispatch:
+
+concurrency:
+  group: control-plane-release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+permissions:
+  contents: read
+
+env:
+  COLLECTOR_IMAGE: otel/opentelemetry-collector-contrib:0.156.0@sha256:125bdbeb7590cc1952c5b3430ecf14063568980c2c93d5b38676cc0446ed8108
+  SEMGREP_IMAGE: semgrep/semgrep:1.169.0@sha256:2b33f46ba66cf8cc2ad59ccfa7d22951fd00c632c38f1339e84ec8e6e641a942
+  SEMGREP_RULES_COMMIT: 647d58eb2e085440618782963ff094178d98d2fe
+  SEMGREP_RULES_SHA256: 4e655be3027b6ce5c5d44813580b7649d66be3dcdf44e7375102a139650f99f6
+  SEMGREP_RULES_URL: https://codeload.github.com/semgrep/semgrep-rules/tar.gz/647d58eb2e085440618782963ff094178d98d2fe
+  TRIVY_IMAGE: aquasec/trivy:0.72.0@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f
+
+jobs:
+  metadata:
+    name: Validate release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate version and changelog
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(tr -d '[:space:]' < VERSION)
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "VERSION must use X.Y.Z" >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag_version=${GITHUB_REF_NAME#v}
+            if [[ "$tag_version" != "$version" ]]; then
+              echo "Tag $GITHUB_REF_NAME does not match VERSION $version" >&2
+              exit 1
+            fi
+          fi
+          bash scripts/release-notes.sh "$version" CHANGELOG.md > /tmp/release-notes.md
+          test -s /tmp/release-notes.md
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  verify:
+    name: UI, Go and PostgreSQL tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+        env:
+          POSTGRES_DB: o11y_test
+          POSTGRES_USER: o11y_test
+          POSTGRES_PASSWORD: o11y-test-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U o11y_test -d o11y_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Verify UI
+        working-directory: ui
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npm run verify
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Test and vet backend
+        working-directory: .
+        run: |
+          go test -count=1 ./...
+          go vet ./...
+          go test -race -count=1 ./cmd/server
+
+      - name: Run integration suite with PostgreSQL 18.4
+        working-directory: .
+        env:
+          O11Y_TEST_DATABASE_URL: postgres://o11y_test:o11y-test-password@127.0.0.1:5432/o11y_test?sslmode=disable
+        run: go test -count=1 -tags=integration ./...
+
+  source-security:
+    name: Semgrep and Trivy source scans
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        id: source-checkout
+        uses: actions/checkout@v4
+
+      - name: Download and verify the pinned Semgrep ruleset
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p \
+            control-plane-security \
+            semgrep-rules
+          curl --fail --silent --show-error --location \
+            --retry 3 \
+            "${SEMGREP_RULES_URL}" \
+            --output semgrep-rules.tar.gz
+          printf '%s  %s\n' \
+            "${SEMGREP_RULES_SHA256}" \
+            semgrep-rules.tar.gz \
+            | sha256sum --check --strict -
+          tar --extract --gzip \
+            --file semgrep-rules.tar.gz \
+            --directory semgrep-rules \
+            --strip-components=1
+          sha256sum semgrep-rules.tar.gz \
+            > control-plane-security/semgrep-rules.sha256
+          printf '%s\n' "${SEMGREP_RULES_COMMIT}" \
+            > control-plane-security/semgrep-rules.commit
+
+      - name: Run pinned Semgrep offline
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+          mounts=(
+            -v "${PWD}:/src:ro"
+            -v "${RUNNER_TEMP}/control-plane-security:/reports"
+            -v "${RUNNER_TEMP}/semgrep-rules:/rules:ro"
+            -w /src
+          )
+          docker run --rm --network none "${mounts[@]}" "${SEMGREP_IMAGE}" \
+            semgrep scan \
+              --config /rules/go/lang/security \
+              --config /rules/javascript/lang/security \
+              --config /rules/typescript/react/security \
+              --config /rules/generic/secrets/gitleaks \
+              --config /rules/bash \
+              --config /rules/json \
+              --config /rules/yaml \
+              --metrics=off --disable-version-check --oss-only \
+              --disable-nosem \
+              --json-output=/reports/semgrep.json \
+              --exclude ui/dist \
+              --exclude cmd/server/web/assets
+          test -s "${RUNNER_TEMP}/control-plane-security/semgrep.json"
+
+          # Baseline revisado: conserva los falsos positivos en el JSON y exige
+          # coincidencia exacta por rule ID, archivo y cantidad. Cualquier resultado
+          # adicional, distinto o corregido obliga a revisar y actualizar el baseline.
+          jq --exit-status '
+            def count($rule; $path):
+              [.results[] | select(.check_id == $rule and .path == $path)] | length;
+            def accepted:
+              (.check_id == "rules.go.lang.security.audit.net.cookie-missing-secure" and
+                (.path == "cmd/server/auth.go" or .path == "cmd/server/saml_auth.go")) or
+              (.check_id == "rules.go.lang.security.audit.dangerous-exec-command" and
+                .path == "cmd/server/collector_validation.go") or
+              (.check_id == "rules.go.lang.security.shared-url-struct-mutation" and
+                .path == "cmd/server/network.go") or
+              (.check_id == "rules.go.lang.security.audit.xss.no-direct-write-to-responsewriter" and
+                .path == "cmd/server/saml_auth.go") or
+              (.check_id == "rules.typescript.react.security.audit.react-href-var" and
+                .path == "ui/src/main.jsx");
+            ([.results[] | select(accepted | not)] | length == 0) and
+            (count("rules.go.lang.security.audit.net.cookie-missing-secure";
+              "cmd/server/auth.go") == 3) and
+            (count("rules.go.lang.security.audit.net.cookie-missing-secure";
+              "cmd/server/saml_auth.go") == 1) and
+            (count("rules.go.lang.security.audit.dangerous-exec-command";
+              "cmd/server/collector_validation.go") == 1) and
+            (count("rules.go.lang.security.shared-url-struct-mutation";
+              "cmd/server/network.go") == 6) and
+            (count("rules.go.lang.security.audit.xss.no-direct-write-to-responsewriter";
+              "cmd/server/saml_auth.go") == 2) and
+            (count("rules.typescript.react.security.audit.react-href-var";
+              "ui/src/main.jsx") == 1)
+          ' "${RUNNER_TEMP}/control-plane-security/semgrep.json" >/dev/null
+
+      - name: Warm Trivy data without mounting source
+        if: always() && steps.source-checkout.outcome == 'success'
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p \
+            control-plane-security \
+            trivy-cache \
+            trivy-bootstrap-empty
+          cache_mount=(
+            -v "${RUNNER_TEMP}/trivy-cache:/root/.cache/trivy"
+          )
+          empty_mount=(
+            -v "${RUNNER_TEMP}/trivy-bootstrap-empty:/empty:ro"
+          )
+          docker run --rm "${cache_mount[@]}" "${empty_mount[@]}" \
+            "${TRIVY_IMAGE}" \
+            fs --download-db-only --no-progress /empty
+          docker run --rm "${cache_mount[@]}" "${empty_mount[@]}" \
+            "${TRIVY_IMAGE}" \
+            fs --download-java-db-only --no-progress /empty
+          docker run --rm "${cache_mount[@]}" "${empty_mount[@]}" \
+            "${TRIVY_IMAGE}" \
+            fs --scanners misconfig --disable-telemetry \
+              --skip-db-update --skip-java-db-update --skip-version-check \
+              --format json --output /dev/null /empty
+          docker run --rm "${cache_mount[@]}" "${TRIVY_IMAGE}" \
+            version --format json \
+            > control-plane-security/trivy-metadata.json
+          test -s control-plane-security/trivy-metadata.json
+
+      - name: Generate complete Trivy 0.72.0 filesystem report offline
+        if: always() && steps.source-checkout.outcome == 'success'
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+          mounts=(
+            -v "${PWD}:/src:ro"
+            -v "${RUNNER_TEMP}/control-plane-security:/reports"
+            -v "${RUNNER_TEMP}/trivy-cache:/root/.cache/trivy"
+          )
+          offline_flags=(
+            --disable-telemetry
+            --offline-scan
+            --skip-check-update
+            --skip-db-update
+            --skip-java-db-update
+            --skip-vex-repo-update
+            --skip-version-check
+          )
+          docker run --rm --network none "${mounts[@]}" \
+            "${TRIVY_IMAGE}" \
+            fs "${offline_flags[@]}" --scanners vuln,secret,misconfig \
+            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+            --format json --output /reports/trivy-filesystem.json \
+            /src
+          test -s "${RUNNER_TEMP}/control-plane-security/trivy-filesystem.json"
+
+      - name: Enforce Trivy source gate from report
+        if: always() && steps.source-checkout.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none \
+            -v "${RUNNER_TEMP}/control-plane-security:/reports:ro" \
+            "${TRIVY_IMAGE}" \
+            convert --scanners vuln,secret,misconfig \
+            --severity HIGH,CRITICAL --exit-code 1 \
+            /reports/trivy-filesystem.json
+
+      - name: Upload source security reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: control-plane-source-security
+          path: ${{ runner.temp }}/control-plane-security/*
+          if-no-files-found: warn
+          retention-days: 30
+
+  packages:
+    name: Linux ${{ matrix.arch }} package
+    needs:
+      - metadata
+      - source-security
+      - verify
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - amd64
+          - arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build embedded UI
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
+          rm -rf ../cmd/server/web
+          cp -R dist ../cmd/server/web
+
+      - name: Build server and assemble portable package
+        working-directory: .
+        env:
+          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="o11y-control-plane-${VERSION}-linux-${ARCH}"
+          stage="${RUNNER_TEMP}/${package}"
+          mkdir -p "$stage/docs/security"
+
+          CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" \
+            go build -trimpath -ldflags="-s -w" \
+            -o "$stage/o11y-control-plane" ./cmd/server
+
+          container=$(docker create --platform "linux/${ARCH}" "$COLLECTOR_IMAGE")
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          docker cp "$container:/otelcol-contrib" "$stage/otelcol-contrib"
+          chmod 0555 "$stage/o11y-control-plane" "$stage/otelcol-contrib"
+
+          cp VERSION README.md CHANGELOG.md TESTING.md "$stage/"
+          cp docs/*.md "$stage/docs/"
+          cp docs/security/*.md "$stage/docs/security/"
+
+          tar -C "$RUNNER_TEMP" -czf "${package}.tar.gz" "$package"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: control-plane-linux-${{ matrix.arch }}
+          path: o11y-control-plane-${{ needs.metadata.outputs.version }}-linux-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  chart:
+    name: Validate and package Helm chart
+    needs:
+      - metadata
+      - source-security
+      - verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v4.2.0
+
+      - name: Lint and run render tests
+        run: charts/o11y-control-plane/tests/render.sh
+
+      - name: Package chart
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p chart-package
+          helm package charts/o11y-control-plane \
+            --version "${VERSION}" \
+            --app-version "${VERSION}" \
+            --destination chart-package
+          test -s "chart-package/o11y-control-plane-${VERSION}.tgz"
+
+      - name: Upload chart
+        uses: actions/upload-artifact@v4
+        with:
+          name: control-plane-helm-chart
+          path: chart-package/*.tgz
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-chart:
+    name: Publish Helm chart to GHCR
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - chart
+      - metadata
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v4.2.0
+
+      - name: Download chart
+        uses: actions/download-artifact@v4
+        with:
+          name: control-plane-helm-chart
+          path: chart-package
+
+      - name: Log in and push chart
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner=${GITHUB_REPOSITORY_OWNER,,}
+          printf '%s' "${GHCR_TOKEN}" |
+            helm registry login ghcr.io \
+              --username "${GITHUB_ACTOR}" \
+              --password-stdin
+          helm push \
+            "chart-package/o11y-control-plane-${VERSION}.tgz" \
+            "oci://ghcr.io/${owner}/charts"
+
+  image:
+    name: Publish multi-architecture image
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - metadata
+      - source-security
+      - verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image.outputs.name }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve image name and build date
+        id: image
+        shell: bash
+        run: |
+          owner=${GITHUB_REPOSITORY_OWNER,,}
+          echo "name=ghcr.io/${owner}/o11y-control-plane" >> "$GITHUB_OUTPUT"
+          echo "created=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.image.outputs.name }}:${{ needs.metadata.outputs.version }}
+          build-args: |
+            VERSION=${{ needs.metadata.outputs.version }}
+            REVISION=${{ github.sha }}
+            BUILD_DATE=${{ steps.image.outputs.created }}
+            SOURCE_URL=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=control-plane
+          cache-to: type=gha,mode=max,scope=control-plane
+          sbom: true
+          provenance: mode=max
+
+  scan-image:
+    name: Scan image on linux/${{ matrix.arch }}
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - amd64
+          - arm64
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Scan image and enforce the release gate
+        env:
+          ARCH: ${{ matrix.arch }}
+          IMAGE_REFERENCE: ${{ needs.image.outputs.image }}@${{ needs.image.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports trivy-cache
+          report="reports/control-plane-linux-${ARCH}.json"
+          mounts=(
+            -v "${HOME}/.docker:/root/.docker:ro"
+            -v "${PWD}/reports:/reports"
+            -v "${PWD}/trivy-cache:/root/.cache/trivy"
+          )
+          docker run --rm "${mounts[@]}" "${TRIVY_IMAGE}" \
+            image --platform "linux/${ARCH}" \
+            --scanners vuln,secret,misconfig \
+            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+            --format json --output "/reports/control-plane-linux-${ARCH}.json" \
+            "${IMAGE_REFERENCE}"
+          test -s "${report}"
+          # Collector 0.156.0 still has documented upstream HIGH/MEDIUM
+          # findings. CRITICAL remains a blocking release condition.
+          docker run --rm --network none \
+            -v "${PWD}/reports:/reports:ro" \
+            "${TRIVY_IMAGE}" \
+            convert --scanners vuln,secret,misconfig \
+            --severity CRITICAL --exit-code 1 \
+            "/reports/control-plane-linux-${ARCH}.json"
+
+      - name: Upload scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: control-plane-scan-linux-${{ matrix.arch }}
+          path: reports/*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - metadata
+      - packages
+      - publish-chart
+      - image
+      - scan-image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: control-plane-linux-*
+          path: release
+          merge-multiple: true
+
+      - name: Download Helm chart
+        uses: actions/download-artifact@v4
+        with:
+          name: control-plane-helm-chart
+          path: release
+
+      - name: Generate checksums and release notes
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+          IMAGE: ${{ needs.image.outputs.image }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="${GITHUB_WORKSPACE}/release"
+          (
+            cd "$release_dir"
+            sha256sum ./*.tar.gz ./*.tgz | sort -k2 > SHA256SUMS
+          )
+          {
+            echo "## Imagen OCI"
+            echo
+            echo "\`${IMAGE}:${VERSION}\`"
+            echo
+            echo "Manifest list: \`${DIGEST}\`"
+            echo
+            owner=${GITHUB_REPOSITORY_OWNER,,}
+            echo "## Helm OCI"
+            echo
+            echo "\`oci://ghcr.io/${owner}/charts/o11y-control-plane --version ${VERSION}\`"
+            echo
+            bash scripts/release-notes.sh "$VERSION" CHANGELOG.md
+          } > "$release_dir/RELEASE_NOTES.md"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "O11y Control Plane ${{ needs.metadata.outputs.version }}" \
+            --notes-file release/RELEASE_NOTES.md \
+            release/*.tar.gz \
+            release/*.tgz \
+            release/SHA256SUMS

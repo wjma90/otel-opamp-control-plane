@@ -1,0 +1,45 @@
+.explanation {
+  max-width: 700px;
+  margin: -11px 0 20px;
+  color: #718079;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.tr {
+  grid-template-columns: 1.25fr 0.7fr 0.75fr 0.75fr 1.2fr 0.7fr;
+}
+
+.badge {
+  width: max-content;
+  padding: 4px 7px;
+  border-radius: 12px;
+  font-style: normal;
+  cursor: help;
+}
+
+.badge.ok {
+  color: #2a7735;
+  background: #e7f8e9;
+}
+
+.badge.warn {
+  color: #805d12;
+  background: #fff3ce;
+}
+
+.badge.bad {
+  color: #a13232;
+  background: #fde7e7;
+}
+
+.badge.neutral {
+  color: #65716c;
+  background: #edf0ee;
+}
+
+@media (max-width: 650px) {
+  .tr {
+    grid-template-columns: 1fr 1fr;
+  }
+}

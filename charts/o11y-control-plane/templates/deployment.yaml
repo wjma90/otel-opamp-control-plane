@@ -1,0 +1,226 @@
+{{- include "o11y-control-plane.validate" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "o11y-control-plane.fullname" . }}
+  labels:
+    {{- include "o11y-control-plane.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  selector:
+    matchLabels:
+      {{- include "o11y-control-plane.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "o11y-control-plane.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- if or .Values.istio.sidecarInjection .Values.podAnnotations }}
+      annotations:
+        {{- if .Values.istio.sidecarInjection }}
+        sidecar.istio.io/inject: "true"
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+    spec:
+      automountServiceAccountToken: {{ .Values.automountServiceAccountToken }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: control-plane
+          image: {{ include "o11y-control-plane.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: OPAMP_AUTH_MODE
+              value: {{ .Values.config.opampAuthMode | quote }}
+            - name: OPAMP_TLS_ENABLED
+              value: {{ .Values.opampTls.enabled | quote }}
+            {{- if .Values.opampTls.enabled }}
+            - name: OPAMP_TLS_CERT_FILE
+              value: /etc/o11y/opamp-tls/tls.crt
+            - name: OPAMP_TLS_KEY_FILE
+              value: /etc/o11y/opamp-tls/tls.key
+            {{- end }}
+            - name: SERVER_PUBLIC_URL
+              value: {{ .Values.config.serverPublicURL | quote }}
+            - name: OPAMP_PUBLIC_URL
+              value: {{ .Values.config.opampPublicURL | quote }}
+            - name: SERVER_TRUSTED_PROXY_CIDRS
+              value: {{ .Values.config.trustedProxyCIDRs | quote }}
+            - name: COLLECTOR_VALIDATOR_VERSION
+              value: {{ .Values.config.collectorValidatorVersion | quote }}
+            - name: MASTER_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.master.existingSecret | quote }}
+                  key: {{ .Values.auth.master.usernameKey | quote }}
+            - name: MASTER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.master.existingSecret | quote }}
+                  key: {{ .Values.auth.master.passwordKey | quote }}
+            - name: AUTH_SIGNING_KEY_FILE
+              value: /etc/o11y/signing/signing.key
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret | quote }}
+                  key: {{ .Values.database.urlKey | quote }}
+            {{- if eq .Values.config.opampAuthMode "token" }}
+            - name: CONTROL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.opampToken.existingSecret | quote }}
+                  key: {{ .Values.auth.opampToken.key | quote }}
+            {{- end }}
+            {{- if .Values.saml.enabled }}
+            - name: AUTH_SAML_SP_CERT_FILE
+              value: /etc/o11y/saml/tls.crt
+            - name: AUTH_SAML_SP_KEY_FILE
+              value: /etc/o11y/saml/tls.key
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http-ui
+              containerPort: 8080
+              protocol: TCP
+            - name: http-opamp
+              containerPort: 4320
+              protocol: TCP
+          {{- if .Values.probes.readiness.enabled }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: http-ui
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          {{- end }}
+          {{- if .Values.probes.liveness.enabled }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: http-ui
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: signing
+              mountPath: /etc/o11y/signing
+              readOnly: true
+            {{- if .Values.opampTls.enabled }}
+            - name: opamp-tls
+              mountPath: /etc/o11y/opamp-tls
+              readOnly: true
+            {{- end }}
+            {{- if .Values.saml.enabled }}
+            - name: saml
+              mountPath: /etc/o11y/saml
+              readOnly: true
+            {{- end }}
+            {{- if .Values.validator.hostfs.enabled }}
+            - name: validator-hostfs
+              mountPath: {{ .Values.validator.hostfs.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.tmp.enabled }}
+            - name: tmp
+              mountPath: {{ .Values.tmp.mountPath }}
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: signing
+          secret:
+            secretName: {{ include "o11y-control-plane.signingSecretName" . | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.auth.signing.key | quote }}
+                path: signing.key
+        {{- if .Values.opampTls.enabled }}
+        - name: opamp-tls
+          secret:
+            secretName: {{ .Values.opampTls.existingSecret | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.opampTls.certKey | quote }}
+                path: tls.crt
+              - key: {{ .Values.opampTls.privateKeyKey | quote }}
+                path: tls.key
+        {{- end }}
+        {{- if .Values.saml.enabled }}
+        - name: saml
+          secret:
+            secretName: {{ include "o11y-control-plane.samlSecretName" . | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.saml.certKey | quote }}
+                path: tls.crt
+              - key: {{ .Values.saml.privateKeyKey | quote }}
+                path: tls.key
+        {{- end }}
+        {{- if .Values.validator.hostfs.enabled }}
+        - name: validator-hostfs
+          {{- if .Values.validator.hostfs.sizeLimit }}
+          emptyDir:
+            sizeLimit: {{ .Values.validator.hostfs.sizeLimit }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- end }}
+        {{- if .Values.tmp.enabled }}
+        - name: tmp
+          {{- if or .Values.tmp.medium .Values.tmp.sizeLimit }}
+          emptyDir:
+            {{- with .Values.tmp.medium }}
+            medium: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.tmp.sizeLimit }}
+            sizeLimit: {{ . }}
+            {{- end }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

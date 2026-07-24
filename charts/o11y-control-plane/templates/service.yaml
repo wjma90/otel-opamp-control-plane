@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "o11y-control-plane.fullname" . }}
+  labels:
+    {{- include "o11y-control-plane.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "o11y-control-plane.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http-ui
+      port: {{ .Values.service.uiPort }}
+      targetPort: http-ui
+      protocol: TCP
+    - name: http-opamp
+      port: {{ .Values.service.opampPort }}
+      targetPort: http-opamp
+      protocol: TCP

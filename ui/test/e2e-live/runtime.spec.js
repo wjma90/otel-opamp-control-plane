@@ -1,0 +1,74 @@
+import { expect, test } from "@playwright/test";
+
+const requiredEnvironment = (name) => {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`${name} is required for the deployed Control Plane smoke test`);
+  }
+  return value;
+};
+
+const username = requiredEnvironment("O11Y_E2E_USERNAME");
+const password = requiredEnvironment("O11Y_E2E_PASSWORD");
+
+const isGoogleResource = (requestURL) => {
+  const hostname = new URL(requestURL).hostname.toLowerCase();
+  return hostname === "googleapis.com" ||
+    hostname.endsWith(".googleapis.com") ||
+    hostname === "gstatic.com" ||
+    hostname.endsWith(".gstatic.com") ||
+    hostname === "googleusercontent.com" ||
+    hostname.endsWith(".googleusercontent.com");
+};
+
+test("the deployed Control Plane logs in and renders Fleet without browser failures", async ({ page }) => {
+  const pageErrors = [];
+  const consoleErrors = [];
+  const googleResources = [];
+  let authenticated = false;
+
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    const text = message.text();
+    if (
+      message.type() === "error" &&
+      (authenticated || text.includes("Content Security Policy"))
+    ) {
+      consoleErrors.push(text);
+    }
+  });
+  page.on("request", (request) => {
+    if (isGoogleResource(request.url())) googleResources.push(request.url());
+  });
+
+  const documentResponse = await page.goto("/?tab=agents", {
+    waitUntil: "domcontentloaded",
+  });
+  expect(documentResponse?.ok(), "the deployed UI document must be reachable").toBeTruthy();
+
+  await expect(page).toHaveTitle("O11Y Control Plane");
+  await expect(page.getByRole("heading", { name: "Accede al Control Plane" })).toBeVisible();
+  await page.getByLabel("Usuario", { exact: true }).fill(username);
+  await page.getByLabel("Contraseña", { exact: true }).fill(password);
+
+  const [loginResponse] = await Promise.all([
+    page.waitForResponse((response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/auth/login"),
+    page.getByRole("button", { name: "Ingresar", exact: true }).click(),
+  ]);
+  expect(
+    loginResponse.ok(),
+    `local login returned HTTP ${loginResponse.status()}`,
+  ).toBeTruthy();
+  authenticated = true;
+
+  await expect(page.getByRole("heading", { name: "Clientes OpAMP" })).toBeVisible();
+  // Fleet polls continuously, so this page intentionally never reaches networkidle.
+  await page.waitForTimeout(1_000);
+
+  await expect(page.locator("#root")).not.toBeEmpty();
+  expect(pageErrors, "uncaught browser errors").toEqual([]);
+  expect(consoleErrors, "console errors").toEqual([]);
+  expect(googleResources, "Google-hosted runtime resources").toEqual([]);
+});

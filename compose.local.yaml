@@ -1,0 +1,41 @@
+name: o11y-control-plane-local
+
+services:
+  postgres:
+    image: postgres:18.4-alpine
+    environment:
+      POSTGRES_DB: o11y_control_plane_local
+      POSTGRES_USER: o11y_local
+      POSTGRES_PASSWORD: o11y-local-password
+    ports:
+      - 127.0.0.1:55432:5432
+    tmpfs:
+      - /var/lib/postgresql:rw,noexec,nosuid,size=512m
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U o11y_local -d o11y_control_plane_local
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    security_opt:
+      - no-new-privileges:true
+
+  mailpit:
+    image: axllent/mailpit:v1.27.8
+    profiles:
+      - mail
+    environment:
+      MP_DATABASE: /data/mailpit.db
+      MP_SMTP_BIND_ADDR: 0.0.0.0:1025
+      MP_UI_BIND_ADDR: 0.0.0.0:8025
+    ports:
+      - 127.0.0.1:1025:1025
+      - 127.0.0.1:8025:8025
+    read_only: true
+    tmpfs:
+      - /data:rw,noexec,nosuid,size=64m
+      - /tmp:rw,noexec,nosuid,size=16m
+    security_opt:
+      - no-new-privileges:true
+

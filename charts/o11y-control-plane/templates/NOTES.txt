@@ -1,0 +1,20 @@
+Create the Secrets referenced by values before the Deployment starts:
+
+  kubectl -n {{ .Release.Namespace }} create secret generic {{ .Values.auth.master.existingSecret }} \
+    --from-literal={{ .Values.auth.master.usernameKey }}=o11y-admin \
+    --from-literal={{ .Values.auth.master.passwordKey }}='<strong-bootstrap-password>' \
+    --from-literal={{ .Values.database.urlKey }}='postgres://...'
+
+  kubectl -n {{ .Release.Namespace }} create secret generic {{ include "o11y-control-plane.signingSecretName" . }} \
+    --from-file={{ .Values.auth.signing.key }}=./signing.key
+
+Check readiness:
+
+  kubectl -n {{ .Release.Namespace }} port-forward \
+    service/{{ include "o11y-control-plane.fullname" . }} 8080:{{ .Values.service.uiPort }}
+  curl http://127.0.0.1:8080/readyz
+
+{{- if eq .Values.config.opampAuthMode "disabled" }}
+OPAMP authentication is disabled. Keep port 4320 on a trusted network or
+enable token mode before exposing it outside the cluster.
+{{- end }}

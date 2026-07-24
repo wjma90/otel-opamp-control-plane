@@ -1,0 +1,9 @@
+ui/node_modules
+ui/dist
+cmd/server/web/assets
+server
+*.log
+docs
+scripts
+*.md
+VERSION

@@ -1,0 +1,33 @@
+{{- if .Values.saml.certManager.enabled }}
+{{- if .Values.saml.certManager.createIssuer }}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "o11y-control-plane.fullname" . }}-saml-selfsigned
+  labels:
+    {{- include "o11y-control-plane.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+{{- end }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "o11y-control-plane.fullname" . }}-saml
+  labels:
+    {{- include "o11y-control-plane.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "o11y-control-plane.samlSecretName" . }}
+  commonName: {{ .Values.saml.certManager.commonName | quote }}
+  duration: {{ .Values.saml.certManager.duration }}
+  renewBefore: {{ .Values.saml.certManager.renewBefore }}
+  revisionHistoryLimit: 3
+  privateKey:
+    {{- toYaml .Values.saml.certManager.privateKey | nindent 4 }}
+  usages:
+    - digital signature
+  issuerRef:
+    name: {{ default (printf "%s-saml-selfsigned" (include "o11y-control-plane.fullname" .)) .Values.saml.certManager.issuerRef.name }}
+    kind: {{ .Values.saml.certManager.issuerRef.kind }}
+    group: {{ .Values.saml.certManager.issuerRef.group }}
+{{- end }}

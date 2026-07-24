@@ -1,0 +1,28 @@
+{
+  "name": "o11y-control-plane-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite",
+    "preview": "vite preview",
+    "test": "npm run test:unit",
+    "test:unit": "node --test src/*.test.js",
+    "test:integration": "npm run build && node --test test/integration/*.test.js",
+    "test:e2e": "npm run build && playwright test",
+    "test:e2e:live": "playwright test --config=playwright.live.config.js",
+    "verify": "npm run test:unit && npm run test:integration && playwright test"
+  },
+  "dependencies": {
+    "@fontsource/dm-sans": "5.3.0",
+    "@fontsource/space-mono": "5.3.0",
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1",
+    "@vitejs/plugin-react": "5.1.1",
+    "vite": "7.3.6"
+  }
+}
