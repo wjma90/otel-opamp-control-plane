@@ -55,6 +55,88 @@ export const legacyHTTPConfigurationCount = (policy = {}, direction = "INCOMING"
   ).length;
 };
 
+export const legacyHTTPHeaderCount = (policy = {}, direction = "INCOMING") => {
+  const expectedDirection = normalizeHTTPDirection(direction);
+  return [
+    ...(Array.isArray(policy.requestHeaders) ? policy.requestHeaders : []),
+    ...(Array.isArray(policy.responseHeaders) ? policy.responseHeaders : []),
+  ].filter(
+    (item) => normalizeHTTPDirection(item?.direction) === expectedDirection,
+  ).length;
+};
+
+export const createHTTPDurationMetricPolicy = (
+  direction = "INCOMING",
+  id = `http-metric-${Date.now()}`,
+) => ({
+  id,
+  enabled: true,
+  direction: normalizeHTTPDirection(direction),
+  value: {
+    source: "DURATION",
+    argumentIndex: -1,
+    path: "",
+    constant: 1,
+  },
+  name: "",
+  instrument: "HISTOGRAM",
+  unit: "s",
+  description: "Duración de los intercambios HTTP",
+  standardAttributes: [],
+  customAttributes: [],
+  buckets: [
+    0.005,
+    0.01,
+    0.025,
+    0.05,
+    0.075,
+    0.1,
+    0.25,
+    0.5,
+    0.75,
+    1,
+    2.5,
+    5,
+    7.5,
+    10,
+  ],
+});
+
+export const normalizeHTTPMetricPolicy = (metric = {}) => ({
+  ...metric,
+  direction: normalizeHTTPDirection(metric.direction),
+  value: {
+    source: "DURATION",
+    argumentIndex: -1,
+    path: "",
+    constant: 1,
+    ...(metric.value || {}),
+  },
+  standardAttributes: Array.isArray(metric.standardAttributes)
+    ? metric.standardAttributes
+    : [],
+  customAttributes: (Array.isArray(metric.customAttributes)
+    ? metric.customAttributes
+    : []).map((attribute) => ({
+    source: "REQUEST_HEADER",
+    argumentIndex: -1,
+    path: "",
+    constant: 1,
+    header: "",
+    attribute: "",
+    destinations: [],
+    ...attribute,
+    valuePolicy: {
+      type: "ENUM",
+      allowed: ["VALUE_A", "VALUE_B"],
+      fallback: "OTHER",
+      ranges: [],
+      ...(attribute?.valuePolicy || {}),
+    },
+  })),
+  buckets: Array.isArray(metric.buckets) ? metric.buckets : [],
+});
+
 export const httpEventUsesBody = (eventPolicy = {}) =>
   [...(eventPolicy.conditions || []), ...(eventPolicy.fields || [])].some(
     (item) => item?.source === "REQUEST_BODY" || item?.source === "RESPONSE_BODY",
@@ -194,7 +276,23 @@ export const httpEventMetricStandardAttributes = (direction = "INCOMING") => [
   },
   {
     name: "error.type",
-    help: "Código de estado sólo cuando OTel considera errónea la operación.",
+    help: "Se omite en operaciones exitosas. En errores contiene el código HTTP, timeout o la clase de excepción.",
+  },
+];
+
+export const httpMetricStandardAttributes = (direction = "INCOMING") => [
+  ...httpEventMetricStandardAttributes(direction),
+  {
+    name: "url.scheme",
+    help: "Esquema HTTP o HTTPS conocido por la instrumentación.",
+  },
+  {
+    name: "network.protocol.name",
+    help: "Nombre estable del protocolo cuando está disponible.",
+  },
+  {
+    name: "network.protocol.version",
+    help: "Versión del protocolo cuando está disponible.",
   },
 ];
 
@@ -346,8 +444,29 @@ export const httpEventUsesPathParameters = (policy = {}) =>
       )),
   );
 
+export const policyUsesPassthroughValuePolicy = (policy = {}) => {
+  const valuePolicies = [
+    ...(policy.metricPolicies || []).flatMap((metric) =>
+      (metric.customAttributes || []).map((attribute) => attribute.valuePolicy),
+    ),
+    ...(policy.methodPolicies || []).flatMap((method) =>
+      (method.captures || []).map((capture) => capture.valuePolicy),
+    ),
+    ...(policy.bodyEventPolicies || []).flatMap((eventPolicy) => [
+      ...(eventPolicy.fields || []).map((field) => field.valuePolicy),
+      ...(eventPolicy.derivedFields || []).map((field) => field.valuePolicy),
+    ]),
+    ...(policy.messagingEventPolicies || []).flatMap((eventPolicy) =>
+      (eventPolicy.fields || []).map((field) => field.valuePolicy),
+    ),
+  ];
+  return valuePolicies.some((valuePolicy) => valuePolicy?.type === "PASSTHROUGH");
+};
+
 export const requiredPolicySchema = (policy = {}) =>
-  (policy.eventMetricPolicies || []).some(
+  policyUsesPassthroughValuePolicy(policy)
+    ? "1.7"
+    : (policy.eventMetricPolicies || []).some(
     (metric) => (metric.standardAttributes || []).length > 0,
   )
     ? "1.6"

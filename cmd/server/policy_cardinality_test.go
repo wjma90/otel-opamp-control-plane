@@ -177,7 +177,7 @@ func TestBusinessEventDimensionAndCardinalityLimitsMirrorJava(t *testing.T) {
 		policy.EventMetricPolicies[0].Dimensions[1] =
 			policy.EventMetricPolicies[0].Dimensions[0]
 		err := validateJavaPolicy("business-duplicate-dimension", encodePolicy(t, policy))
-		if err == nil || !strings.Contains(err.Error(), "unique bounded") {
+		if err == nil || !strings.Contains(err.Error(), "unique extracted") {
 			t.Fatalf("expected duplicate business dimension rejection, got %v", err)
 		}
 	})

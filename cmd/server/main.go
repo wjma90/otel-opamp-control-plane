@@ -3259,33 +3259,36 @@ func validateJavaPolicy(configID, body string) error {
 	if err := validatePolicyResourceLimits(policy); err != nil {
 		return err
 	}
-	if !contains([]string{"1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6"}, policy.SchemaVersion) {
-		return fmt.Errorf("schemaVersion must be 1.0, 1.1, 1.2, 1.3, 1.4, 1.5 or 1.6")
+	if !contains([]string{"1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7"}, policy.SchemaVersion) {
+		return fmt.Errorf("schemaVersion must be 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6 or 1.7")
 	}
-	if len(policy.MetricPolicies) > 0 && !contains([]string{"1.3", "1.4", "1.5", "1.6"}, policy.SchemaVersion) {
+	if len(policy.MetricPolicies) > 0 && !contains([]string{"1.3", "1.4", "1.5", "1.6", "1.7"}, policy.SchemaVersion) {
 		return fmt.Errorf("dynamic HTTP metric value sources require schemaVersion 1.3 or newer")
 	}
-	if (len(policy.BodyEventPolicies) > 0 || len(policy.EventMetricPolicies) > 0) && !contains([]string{"1.3", "1.4", "1.5", "1.6"}, policy.SchemaVersion) {
+	if (len(policy.BodyEventPolicies) > 0 || len(policy.EventMetricPolicies) > 0) && !contains([]string{"1.3", "1.4", "1.5", "1.6", "1.7"}, policy.SchemaVersion) {
 		return fmt.Errorf("policy-driven HTTP events require schemaVersion 1.3 or newer")
 	}
 	for _, event := range policy.BodyEventPolicies {
-		if len(event.DerivedFields) > 0 && !contains([]string{"1.2", "1.3", "1.4", "1.5", "1.6"}, policy.SchemaVersion) {
+		if len(event.DerivedFields) > 0 && !contains([]string{"1.2", "1.3", "1.4", "1.5", "1.6", "1.7"}, policy.SchemaVersion) {
 			return fmt.Errorf("derived body fields require schemaVersion 1.2 or newer")
 		}
-		if httpEventUsesExtendedSources(event) && !contains([]string{"1.4", "1.5", "1.6"}, policy.SchemaVersion) {
+		if httpEventUsesExtendedSources(event) && !contains([]string{"1.4", "1.5", "1.6", "1.7"}, policy.SchemaVersion) {
 			return fmt.Errorf("HTTP event header and query sources require schemaVersion 1.4")
 		}
 	}
-	if httpEventUsesPathParameters(policy) && !contains([]string{"1.5", "1.6"}, policy.SchemaVersion) {
+	if httpEventUsesPathParameters(policy) && !contains([]string{"1.5", "1.6", "1.7"}, policy.SchemaVersion) {
 		return fmt.Errorf("REQUEST_PATH_PARAM requires schemaVersion 1.5")
 	}
-	if (len(policy.MessagingEventPolicies) > 0 || len(policy.MessagingMetricPolicies) > 0) && !contains([]string{"1.5", "1.6"}, policy.SchemaVersion) {
+	if (len(policy.MessagingEventPolicies) > 0 || len(policy.MessagingMetricPolicies) > 0) && !contains([]string{"1.5", "1.6", "1.7"}, policy.SchemaVersion) {
 		return fmt.Errorf("messaging policy events require schemaVersion 1.5")
 	}
 	for _, metric := range policy.EventMetricPolicies {
-		if len(metric.StandardAttributes) > 0 && policy.SchemaVersion != "1.6" {
+		if len(metric.StandardAttributes) > 0 && !contains([]string{"1.6", "1.7"}, policy.SchemaVersion) {
 			return fmt.Errorf("HTTP event metric standard attributes require schemaVersion 1.6")
 		}
+	}
+	if policyUsesPassthroughValuePolicy(policy) && policy.SchemaVersion != "1.7" {
+		return fmt.Errorf("uncontrolled metric label cardinality requires schemaVersion 1.7")
 	}
 	if len(policy.DeniedHeaders) > 0 || len(policy.DeniedBodyPaths) > 0 {
 		return fmt.Errorf("policy-level deniedHeaders and deniedBodyPaths are not supported; configure the Control Plane security denylist")
@@ -3332,6 +3335,43 @@ func httpEventUsesPathParameters(policy javaPolicy) bool {
 		}
 		for _, field := range event.Fields {
 			if field.Source == "REQUEST_PATH_PARAM" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func policyUsesPassthroughValuePolicy(policy javaPolicy) bool {
+	for _, metric := range policy.MetricPolicies {
+		for _, attribute := range metric.CustomAttributes {
+			if attribute.ValuePolicy.Type == "PASSTHROUGH" {
+				return true
+			}
+		}
+	}
+	for _, method := range policy.MethodPolicies {
+		for _, capture := range method.Captures {
+			if capture.ValuePolicy.Type == "PASSTHROUGH" {
+				return true
+			}
+		}
+	}
+	for _, event := range policy.BodyEventPolicies {
+		for _, field := range event.Fields {
+			if field.ValuePolicy.Type == "PASSTHROUGH" {
+				return true
+			}
+		}
+		for _, field := range event.DerivedFields {
+			if field.ValuePolicy.Type == "PASSTHROUGH" {
+				return true
+			}
+		}
+	}
+	for _, event := range policy.MessagingEventPolicies {
+		for _, field := range event.Fields {
+			if field.ValuePolicy.Type == "PASSTHROUGH" {
 				return true
 			}
 		}
@@ -4001,7 +4041,7 @@ func validateBodyEventPolicies(
 		for _, dimension := range metric.Dimensions {
 			field, exists := fields[dimension]
 			if seenDimensions[dimension] || !exists || !contains(field.Destinations, "METRIC") {
-				return nil, fmt.Errorf("%s dimension must reference a unique bounded extracted or derived field: %s", metric.Name, dimension)
+				return nil, fmt.Errorf("%s dimension must reference a unique extracted or derived metric field: %s", metric.Name, dimension)
 			}
 			seenDimensions[dimension] = true
 			metricCardinality = boundedCardinalityProduct(
@@ -4259,6 +4299,12 @@ func validateValueSource(source valueSource) error {
 }
 
 func validateBoundedPolicy(policy valuePolicy) error {
+	if policy.Type == "PASSTHROUGH" {
+		if len(policy.Allowed) > 0 || len(policy.Ranges) > 0 || !isPolicyBlank(policy.Fallback) {
+			return fmt.Errorf("PASSTHROUGH does not accept allowed values, ranges or fallback")
+		}
+		return nil
+	}
 	if isPolicyBlank(policy.Fallback) || len(policy.Fallback) > 64 {
 		return fmt.Errorf("bounded value policy requires a fallback of at most 64 characters")
 	}
@@ -4304,7 +4350,7 @@ func validateBoundedPolicy(policy valuePolicy) error {
 		}
 		return nil
 	default:
-		return fmt.Errorf("metric labels require bounded ENUM, RANGE or BOOLEAN")
+		return fmt.Errorf("metric labels require ENUM, RANGE, BOOLEAN or PASSTHROUGH")
 	}
 }
 
@@ -4316,6 +4362,8 @@ func boundedValueCardinality(policy valuePolicy) int {
 		return min(len(policy.Ranges)+1, maxMetricCardinality+1)
 	case "BOOLEAN":
 		return 2
+	case "PASSTHROUGH":
+		return 1
 	default:
 		return maxMetricCardinality + 1
 	}
@@ -4696,7 +4744,7 @@ func matches(selector AgentSelector, agent Agent) bool {
 
 func policyMetadata(w http.ResponseWriter, _ *http.Request) {
 	jsonOut(w, map[string]any{
-		"schemaVersion": "1.6",
+		"schemaVersion": "1.7",
 		"httpValueSources": []map[string]string{
 			{"id": "DURATION", "label": "Duración del request HTTP", "help": "Segundos transcurridos entre inicio y fin."},
 			{"id": "ATTRIBUTE", "label": "Atributo HTTP numérico", "help": "Convierte un atributo OTel disponible a número."},
@@ -4715,6 +4763,7 @@ func policyMetadata(w http.ResponseWriter, _ *http.Request) {
 		},
 		"instruments":          []string{"HISTOGRAM", "COUNTER", "UP_DOWN_COUNTER"},
 		"eventInstruments":     []string{"COUNTER", "HISTOGRAM"},
+		"valuePolicyTypes":     []string{"ENUM", "RANGE", "BOOLEAN", "PASSTHROUGH"},
 		"eventHTTPAttributes":  []string{"http.request.method", "http.route", "http.response.status_code", "error.type"},
 		"eventFieldSources":    []string{"REQUEST_HEADER", "REQUEST_QUERY", "REQUEST_PATH_PARAM", "REQUEST_BODY", "RESPONSE_HEADER", "RESPONSE_BODY"},
 		"bodySources":          []string{"REQUEST_BODY", "RESPONSE_BODY"},

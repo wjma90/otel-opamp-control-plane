@@ -5,6 +5,22 @@ Las versiones siguen Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.24.11] - 2026-07-24
+
+### Fixed
+
+- Los campos de listas separados por comas conservan la coma mientras el
+  usuario escribe y normalizan el valor al perder el foco; aplica a condiciones
+  HTTP/mensajería, listas permitidas y buckets.
+
+## [0.24.10] - 2026-07-24
+
+### Changed
+
+- La guía HTTP integrada usa un ejemplo neutral de órdenes y elimina referencias
+  visibles a CambistApp para mantener el Control Plane independiente de una
+  aplicación concreta.
+
 ## [0.24.9] - 2026-07-24
 
 ### Removed

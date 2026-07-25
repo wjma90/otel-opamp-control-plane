@@ -41,6 +41,14 @@ test("production bundle exposes the concise OTel Editor label", async () => {
   assert.match(script, /HTTP saliente/);
   assert.match(script, /Request query param/);
   assert.match(script, /Cuándo ocurre, qué datos usar y qué telemetría emitir/);
+  assert.match(script, /Guía rápida: ejemplo HTTP con span, log y métrica/);
+  assert.match(script, /Quick guide: HTTP example with span, log, and metric/);
+  assert.match(script, /POST \/api\/orders/);
+  assert.match(script, /customer\.type/);
+  assert.match(script, /order\.amount/);
+  assert.match(script, /order\.status/);
+  assert.match(script, /order\.approved/);
+  assert.doesNotMatch(script, /CambistApp/i);
   assert.match(script, /Contar coincidencias/);
   assert.match(script, /Total acumulado de un campo no negativo/);
   assert.match(script, /Distribución de un campo/);

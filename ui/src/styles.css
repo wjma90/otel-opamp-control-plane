@@ -1819,6 +1819,27 @@ h4 {
   border-left-color: #4ea6a0;
 }
 
+.http-global-metrics {
+  margin: 22px 0;
+  padding: 18px;
+  border: 1px solid #cfe0d2;
+  border-radius: 14px;
+  background: #f4faf2;
+}
+
+.http-global-metrics > .section-heading {
+  margin-top: 0;
+}
+
+.http-global-metric-card {
+  border-left-color: #74b942;
+  background: #fff;
+}
+
+.http-global-metric-card .value-policy {
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+}
+
 .http-rule-output {
   margin-top: 20px;
   border-top: 1px solid #e5eae6;

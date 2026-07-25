@@ -63,7 +63,7 @@ docker stop o11y-control-plane-test-postgres
 ## Imagen local
 
 ```bash
-docker build -t o11y-control-plane:0.24.9 .
+docker build -t o11y-control-plane:0.24.11 .
 ```
 
 Puertos:

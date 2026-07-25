@@ -29,6 +29,10 @@ test("translator uses English catalog, interpolates variables and falls back to 
   assert.equal(translate("en", "Untranslated wire value"), "Untranslated wire value");
   assert.equal(translate("en", "Restaurar contenido de v7"), "Restore content from v7");
   assert.equal(
+    translate("en", "Guía rápida: ejemplo HTTP con span, log y métrica"),
+    "Quick guide: HTTP example with span, log, and metric",
+  );
+  assert.equal(
     translate("en", "2/3 destino(s) vivo(s) coincidente(s) aplicada(s)"),
     "2/3 matching live target(s) applied",
   );

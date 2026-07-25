@@ -402,7 +402,7 @@ func TestPolicyMetadataMarksOnlyNumericHTTPMetricValueAttributes(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.SchemaVersion != "1.6" ||
+	if payload.SchemaVersion != "1.7" ||
 		!contains(payload.EventFieldSources, "REQUEST_HEADER") ||
 		!contains(payload.EventFieldSources, "REQUEST_QUERY") ||
 		!contains(payload.EventFieldSources, "REQUEST_PATH_PARAM") ||
@@ -413,7 +413,7 @@ func TestPolicyMetadataMarksOnlyNumericHTTPMetricValueAttributes(t *testing.T) {
 		!contains(payload.MessagingSources, "PAYLOAD") ||
 		!contains(payload.EventHTTPAttributes, "http.route") ||
 		!contains(payload.EventHTTPAttributes, "error.type") {
-		t.Fatalf("policy metadata does not expose schema 1.6 sources: %#v", payload)
+		t.Fatalf("policy metadata does not expose the current schema sources: %#v", payload)
 	}
 	types := map[string]string{}
 	for _, attribute := range payload.HTTPAttributes {

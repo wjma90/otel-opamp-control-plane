@@ -1,6 +1,9 @@
 import React from "react";
 
+import { MetricUnitHelp } from "./components/MetricUnitHelp.jsx";
+import { NormalizedInput } from "./components/NormalizedInput.jsx";
 import { useI18n } from "./i18n.js";
+import { ensurePolicySchema } from "./telemetry-events.js";
 import {
   configureEventMetricIntent,
   duplicateTelemetryEventNames,
@@ -82,7 +85,7 @@ const newMetric = (eventName) => ({
 
 const unique = (values) => [...new Set(values.filter(Boolean))];
 
-function ValuePolicyEditor({ value, onChange }) {
+function ValuePolicyEditor({ value, onChange, onRequireSchema }) {
   const { t } = useI18n();
   const rangesText = (value.ranges || [])
     .map((range) => `${range.max ?? "*"}:${range.label}`)
@@ -100,19 +103,25 @@ function ValuePolicyEditor({ value, onChange }) {
               type,
               allowed: type === "ENUM" ? ["VALUE_A", "VALUE_B"] : [],
               ranges: type === "RANGE" ? rangePolicy().ranges : [],
-              fallback: type === "BOOLEAN" ? "false" : "OTHER",
+              fallback: type === "PASSTHROUGH"
+                ? ""
+                : type === "BOOLEAN"
+                  ? "false"
+                  : "OTHER",
             });
+            if (type === "PASSTHROUGH") onRequireSchema?.("1.7");
           }}
         >
           <option value="ENUM">{t("Lista permitida")}</option>
           <option value="RANGE">{t("Rangos")}</option>
           <option value="BOOLEAN">{t("Booleano")}</option>
+          <option value="PASSTHROUGH">{t("Sin control (cualquier valor)")}</option>
         </select>
       </label>
       {value.type === "ENUM" && (
         <label>
           {t("Valores permitidos")}
-          <input
+          <NormalizedInput
             value={(value.allowed || []).join(",")}
             onChange={(event) => onChange({
               ...value,
@@ -124,7 +133,7 @@ function ValuePolicyEditor({ value, onChange }) {
       {value.type === "RANGE" && (
         <label>
           {t("Rangos `máximo:label`")}
-          <input
+          <NormalizedInput
             value={rangesText}
             onChange={(event) => onChange({
               ...value,
@@ -139,13 +148,20 @@ function ValuePolicyEditor({ value, onChange }) {
           />
         </label>
       )}
-      <label>
-        {t("Fallback")}
-        <input
-          value={value.fallback}
-          onChange={(event) => onChange({ ...value, fallback: event.target.value })}
-        />
-      </label>
+      {value.type !== "PASSTHROUGH" && (
+        <label>
+          {t("Fallback")}
+          <input
+            value={value.fallback}
+            onChange={(event) => onChange({ ...value, fallback: event.target.value })}
+          />
+        </label>
+      )}
+      {value.type === "PASSTHROUGH" && (
+        <div className="warning-box compact-warning">
+          {t("Se conservará cualquier valor capturado. Puede crear una cantidad no acotada de series; úsalo sólo cuando aceptes ese costo.")}
+        </div>
+      )}
     </div>
   );
 }
@@ -283,7 +299,7 @@ function MessagingMetricsEditor({ policy, setPolicy, eventPolicy, nameErrors }) 
                 </label>
               ))}
               {!dimensionFields.length && (
-                <small>{t("En Datos, marca un campo como “Usar como label” y limita su cardinalidad.")}</small>
+                <small>{t("En Datos, marca un campo como “Usar como label” y controla su cardinalidad o elige Sin control.")}</small>
               )}
             </div>
             <details className="policy-advanced-options">
@@ -295,6 +311,7 @@ function MessagingMetricsEditor({ policy, setPolicy, eventPolicy, nameErrors }) 
                     value={metric.unit}
                     onChange={(event) => updateMetric(index, { ...metric, unit: event.target.value })}
                   />
+                  <MetricUnitHelp unit={metric.unit} />
                 </label>
                 <label>
                   {t("Descripción")}
@@ -310,13 +327,14 @@ function MessagingMetricsEditor({ policy, setPolicy, eventPolicy, nameErrors }) 
               {intent === "DISTRIBUTION" && (
                 <label>
                   {t("Buckets explícitos")}
-                  <input
+                  <NormalizedInput
                     value={(metric.buckets || []).join(",")}
                     onChange={(event) => updateMetric(index, {
                       ...metric,
                       buckets: event.target.value.split(",").map(Number).filter(Number.isFinite),
                     })}
                   />
+                  <MetricUnitHelp unit={metric.unit} buckets />
                 </label>
               )}
             </details>
@@ -529,7 +547,7 @@ export function MessagingPoliciesEditor({ policy, setPolicy, nameErrors, family 
                     <option value="EQUALS">equals</option>
                     <option value="IN">in</option>
                   </select>
-                  <input
+                  <NormalizedInput
                     aria-label={t("Valores")}
                     placeholder={condition.source === "DESTINATION" ? "orders" : "VALUE_A,VALUE_B"}
                     value={(condition.values || []).join(",")}
@@ -676,6 +694,15 @@ export function MessagingPoliciesEditor({ policy, setPolicy, nameErrors, family 
                   {(field.destinations || []).includes("METRIC") && (
                     <ValuePolicyEditor
                       value={field.valuePolicy || bounded()}
+                      onRequireSchema={(schemaVersion) =>
+                        setPolicy((current) => ({
+                          ...current,
+                          schemaVersion: ensurePolicySchema(
+                            current.schemaVersion,
+                            schemaVersion,
+                          ),
+                        }))
+                      }
                       onChange={(valuePolicy) => updateEvent(eventIndex, {
                         ...eventPolicy,
                         fields: eventPolicy.fields.map((item, index) =>

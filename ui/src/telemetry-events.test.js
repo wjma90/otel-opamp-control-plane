@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   agentSupportsPolicySchema,
   configureEventMetricIntent,
+  createHTTPDurationMetricPolicy,
   duplicateHTTPEventNames,
   ensurePolicySchema,
   eventMetricIntent,
@@ -13,12 +14,16 @@ import {
   httpEventSourceOptions,
   httpEventUsesBody,
   httpEventMetricStandardAttributes,
+  httpMetricStandardAttributes,
   httpSourceSelector,
   legacyHTTPConfigurationCount,
+  legacyHTTPHeaderCount,
   normalizeTelemetryEditorFocus,
   nextHTTPEventName,
   normalizeHTTPEventMetric,
   normalizeHTTPEventPolicy,
+  normalizeHTTPMetricPolicy,
+  policyUsesPassthroughValuePolicy,
   policySchemaRank,
   removeHTTPEventAt,
   renameHTTPEventAt,
@@ -39,6 +44,74 @@ test("resume configuración HTTP heredada sin mezclar direcciones", () => {
 
   assert.equal(legacyHTTPConfigurationCount(policy, "INCOMING"), 2);
   assert.equal(legacyHTTPConfigurationCount(policy, "OUTGOING"), 2);
+  assert.equal(legacyHTTPHeaderCount(policy, "INCOMING"), 2);
+  assert.equal(legacyHTTPHeaderCount(policy, "OUTGOING"), 1);
+});
+
+test("crea una métrica de duración para todos los intercambios sin condiciones", () => {
+  const metric = createHTTPDurationMetricPolicy("INCOMING", "http-duration-1");
+
+  assert.equal(metric.id, "http-duration-1");
+  assert.equal(metric.direction, "INCOMING");
+  assert.equal(metric.value.source, "DURATION");
+  assert.equal(metric.instrument, "HISTOGRAM");
+  assert.equal(metric.unit, "s");
+  assert.ok(metric.buckets.length > 0);
+  assert.equal(Object.hasOwn(metric, "conditions"), false);
+  assert.ok(
+    httpMetricStandardAttributes("INCOMING")
+      .some(({ name }) => name === "http.route"),
+  );
+  assert.equal(
+    httpMetricStandardAttributes("OUTGOING")
+      .some(({ name }) => name === "http.route"),
+    false,
+  );
+
+  assert.deepEqual(normalizeHTTPMetricPolicy({
+    direction: "outgoing",
+    value: null,
+    standardAttributes: null,
+    customAttributes: [{
+      header: "x-customer-type",
+      attribute: "customer.type",
+      valuePolicy: null,
+    }],
+    buckets: null,
+  }), {
+    direction: "OUTGOING",
+    value: {
+      source: "DURATION",
+      argumentIndex: -1,
+      path: "",
+      constant: 1,
+    },
+    standardAttributes: [],
+    customAttributes: [{
+      source: "REQUEST_HEADER",
+      argumentIndex: -1,
+      path: "",
+      constant: 1,
+      header: "x-customer-type",
+      attribute: "customer.type",
+      destinations: [],
+      valuePolicy: {
+        type: "ENUM",
+        allowed: ["VALUE_A", "VALUE_B"],
+        fallback: "OTHER",
+        ranges: [],
+      },
+    }],
+    buckets: [],
+  });
+});
+
+test("describe error.type como un atributo ausente en éxitos y causal en errores", () => {
+  const errorType = httpEventMetricStandardAttributes("INCOMING")
+    .find(({ name }) => name === "error.type");
+
+  assert.match(errorType.help, /Se omite en operaciones exitosas/);
+  assert.match(errorType.help, /código HTTP, timeout o la clase de excepción/);
 });
 
 test("presenta las métricas de evento por intención sin cambiar el contrato wire", () => {
@@ -221,6 +294,32 @@ test("eleva a 1.6 y ofrece sólo atributos contextuales válidos para métricas 
   assert.deepEqual(
     normalizeHTTPEventMetric({ standardAttributes: null }).standardAttributes,
     [],
+  );
+});
+
+test("eleva a 1.7 cuando una dimensión declara cardinalidad sin control", () => {
+  const policy = {
+    schemaVersion: "1.6",
+    metricPolicies: [{
+      customAttributes: [{
+        valuePolicy: {
+          type: "PASSTHROUGH",
+          allowed: [],
+          fallback: "",
+          ranges: [],
+        },
+      }],
+    }],
+  };
+
+  assert.equal(policyUsesPassthroughValuePolicy(policy), true);
+  assert.equal(requiredPolicySchema(policy), "1.7");
+  assert.equal(
+    agentSupportsPolicySchema(
+      { Attributes: { "o11y.policy.schema": "1.6" } },
+      requiredPolicySchema(policy),
+    ),
+    false,
   );
 });
 

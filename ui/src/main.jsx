@@ -8,6 +8,8 @@ import "@fontsource/space-mono/latin-400.css";
 import "@fontsource/space-mono/latin-700.css";
 import { MultiSelectFilter } from "./components/MultiSelectFilter.jsx";
 import { HttpRuleQuickGuide } from "./components/HttpRuleQuickGuide.jsx";
+import { MetricUnitHelp } from "./components/MetricUnitHelp.jsx";
+import { NormalizedInput } from "./components/NormalizedInput.jsx";
 import { StoredVersionPicker } from "./components/StoredVersionPicker.jsx";
 import {
   collectorConfigId,
@@ -108,6 +110,7 @@ import {
 import {
   agentSupportsPolicySchema,
   configureEventMetricIntent,
+  createHTTPDurationMetricPolicy,
   ensurePolicySchema,
   eventMetricIntent,
   eventNameOutput,
@@ -115,10 +118,12 @@ import {
   httpConditionSourceOptions,
   httpEventSourceOptions,
   httpEventUsesBody,
+  httpMetricStandardAttributes,
   httpSourceSelector,
-  legacyHTTPConfigurationCount,
+  legacyHTTPHeaderCount,
   normalizeHTTPEventMetric,
   httpEventMetricStandardAttributes,
+  normalizeHTTPMetricPolicy,
   normalizeHTTPEventPolicy,
   normalizeTelemetryEditorFocus,
   nextHTTPEventName,
@@ -401,16 +406,9 @@ const normalizePolicy = (value) => ({
   })),
   deniedHeaders: [],
   deniedBodyPaths: [],
-  metricPolicies: (value?.metricPolicies || []).map(({ source: _legacySource, ...metricPolicy }) => ({
-    ...metricPolicy,
-    direction: metricPolicy.direction || "INCOMING",
-    value: metricPolicy.value || {
-      source: "DURATION",
-      argumentIndex: -1,
-      path: "",
-      constant: 1,
-    },
-  })),
+  metricPolicies: (value?.metricPolicies || [])
+    .map(({ source: _legacySource, ...metricPolicy }) =>
+      normalizeHTTPMetricPolicy(metricPolicy)),
   methodPolicies: value?.methodPolicies || [],
   bodyEventPolicies: (value?.bodyEventPolicies || []).map(normalizeHTTPEventPolicy),
   eventMetricPolicies: (value?.eventMetricPolicies || []).map(normalizeHTTPEventMetric),
@@ -613,7 +611,7 @@ function StatusBadge({ status, type }) {
   );
 }
 
-function ValuePolicyEditor({ value, onChange }) {
+function ValuePolicyEditor({ value, onChange, onRequireSchema }) {
   const { t } = useI18n();
   const rangesText = (value.ranges || [])
     .map((range) => `${range.max ?? "*"}:${range.label}`)
@@ -632,20 +630,26 @@ function ValuePolicyEditor({ value, onChange }) {
               type,
               allowed: type === "ENUM" ? ["VALUE_A", "VALUE_B"] : [],
               ranges: type === "RANGE" ? rangePolicy().ranges : [],
-              fallback: type === "BOOLEAN" ? "false" : "OTHER",
+              fallback: type === "PASSTHROUGH"
+                ? ""
+                : type === "BOOLEAN"
+                  ? "false"
+                  : "OTHER",
             });
+            if (type === "PASSTHROUGH") onRequireSchema?.("1.7");
           }}
         >
           <option value="ENUM">{t("Lista permitida")}</option>
           <option value="RANGE">{t("Rangos")}</option>
           <option value="BOOLEAN">{t("Booleano")}</option>
+          <option value="PASSTHROUGH">{t("Sin control (cualquier valor)")}</option>
         </select>
       </label>
 
       {value.type === "ENUM" && (
         <label>
           {t("Valores permitidos")}
-          <input
+          <NormalizedInput
             value={(value.allowed || []).join(",")}
             onChange={(event) =>
               onChange({
@@ -663,7 +667,7 @@ function ValuePolicyEditor({ value, onChange }) {
       {value.type === "RANGE" && (
         <label>
           {t("Rangos `máximo:label`")}
-          <input
+          <NormalizedInput
             value={rangesText}
             onChange={(event) =>
               onChange({
@@ -687,15 +691,22 @@ function ValuePolicyEditor({ value, onChange }) {
         </label>
       )}
 
-      <label>
-        {t("Fallback")}
-        <input
-          value={value.fallback}
-          onChange={(event) =>
-            onChange({ ...value, fallback: event.target.value })
-          }
-        />
-      </label>
+      {value.type !== "PASSTHROUGH" && (
+        <label>
+          {t("Fallback")}
+          <input
+            value={value.fallback}
+            onChange={(event) =>
+              onChange({ ...value, fallback: event.target.value })
+            }
+          />
+        </label>
+      )}
+      {value.type === "PASSTHROUGH" && (
+        <div className="warning-box compact-warning">
+          {t("Se conservará cualquier valor capturado. Puede crear una cantidad no acotada de series; úsalo sólo cuando aceptes ese costo.")}
+        </div>
+      )}
     </div>
   );
 }
@@ -1408,7 +1419,7 @@ function HTTPEventMetricsEditor({
               ))}
               {!dimensionFields.length && (
                 <small>
-                  {t("En Datos, marca un campo como “Usar como label” y controla sus valores con ENUM, RANGE o BOOLEAN.")}
+                  {t("En Datos, marca un campo como “Usar como label” y controla su cardinalidad o elige Sin control.")}
                 </small>
               )}
             </div>
@@ -1448,6 +1459,7 @@ function HTTPEventMetricsEditor({
                       })
                     }
                   />
+                  <MetricUnitHelp unit={eventMetric.unit} />
                 </label>
                 <label>
                   {t("Descripción")}
@@ -1465,7 +1477,7 @@ function HTTPEventMetricsEditor({
               {intent === "DISTRIBUTION" && (
                 <label>
                   {t("Buckets explícitos")}
-                  <input
+                  <NormalizedInput
                     value={(eventMetric.buckets || []).join(",")}
                     onChange={(event) =>
                       updateEventMetric(metricIndex, {
@@ -1477,12 +1489,428 @@ function HTTPEventMetricsEditor({
                       })
                     }
                   />
+                  <MetricUnitHelp unit={eventMetric.unit} buckets />
                 </label>
               )}
             </details>
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function HTTPGlobalMetricsEditor({
+  policy,
+  setPolicy,
+  nameErrors,
+  direction,
+}) {
+  const { t } = useI18n();
+  const standardAttributes = httpMetricStandardAttributes(direction);
+  const metrics = (policy.metricPolicies || [])
+    .map((metricPolicy, metricIndex) => ({ metricPolicy, metricIndex }))
+    .filter(
+      ({ metricPolicy }) =>
+        normalizeHTTPDirection(metricPolicy.direction) === direction,
+    );
+
+  const updateMetric = (metricIndex, metricPolicy) =>
+    setPolicy((current) => ({
+      ...current,
+      metricPolicies: current.metricPolicies.map((item, index) =>
+        index === metricIndex ? metricPolicy : item,
+      ),
+    }));
+
+  const requireSchema = (schemaVersion) =>
+    setPolicy((current) => ({
+      ...current,
+      schemaVersion: ensurePolicySchema(current.schemaVersion, schemaVersion),
+    }));
+
+  return (
+    <div className="http-global-metrics">
+      <div className="section-heading small-heading">
+        <div>
+          <h3>{t("Métricas para todos los intercambios HTTP")}</h3>
+          <small>
+            {t("No usan la etapa Cuándo: se registran una vez por cada intercambio HTTP de esta dirección. La duración y los atributos OTel provienen de la instrumentación HTTP nativa.")}
+          </small>
+        </div>
+        <button
+          type="button"
+          className="ghost small"
+          onClick={() =>
+            setPolicy((current) => ({
+              ...current,
+              schemaVersion: ensurePolicySchema(current.schemaVersion, "1.3"),
+              metricPolicies: [
+                ...current.metricPolicies,
+                createHTTPDurationMetricPolicy(direction),
+              ],
+            }))
+          }
+        >
+          {t("+ métrica para todo HTTP")}
+        </button>
+      </div>
+
+      {!metrics.length && (
+        <p className="hint">
+          {t("Usa esta opción para replicar una métrica como http.server.request.duration con otro nombre y labels propios, sin condiciones artificiales.")}
+        </p>
+      )}
+
+      {metrics.map(({ metricPolicy, metricIndex }) => (
+        <div className="nested-card http-global-metric-card" key={metricPolicy.id}>
+          <button
+            type="button"
+            className="remove inline"
+            onClick={() =>
+              setPolicy((current) => ({
+                ...current,
+                metricPolicies: current.metricPolicies.filter(
+                  (_, index) => index !== metricIndex,
+                ),
+              }))
+            }
+          >
+            {t("Eliminar métrica")}
+          </button>
+
+          <div className="row">
+            <label>
+              {t("Nombre OTel")}
+              <input
+                className={
+                  !String(metricPolicy.name || "").trim()
+                    || nameErrors.includes(metricPolicy.name)
+                    ? "invalid"
+                    : ""
+                }
+                value={metricPolicy.name}
+                placeholder="custom.http.server.request.duration"
+                onChange={(event) =>
+                  updateMetric(metricIndex, {
+                    ...metricPolicy,
+                    name: event.target.value,
+                  })
+                }
+              />
+              <MetricUnitHelp unit={metricPolicy.unit} />
+              <small>
+                {t("Debe ser distinto de la métrica estándar ya creada por el Java Agent.")}
+              </small>
+            </label>
+            <label>
+              {t("Fuente del valor")}
+              <select
+                value={metricPolicy.value?.source || "DURATION"}
+                onChange={(event) => {
+                  const source = event.target.value;
+                  updateMetric(metricIndex, {
+                    ...metricPolicy,
+                    value: {
+                      source,
+                      argumentIndex: -1,
+                      path: source === "ATTRIBUTE"
+                        ? "http.response.status_code"
+                        : "",
+                      constant: source === "CONSTANT" ? 1 : 1,
+                    },
+                    instrument: source === "DURATION"
+                      ? "HISTOGRAM"
+                      : metricPolicy.instrument,
+                    unit: source === "DURATION" ? "s" : metricPolicy.unit,
+                    buckets: source === "DURATION" && !metricPolicy.buckets.length
+                      ? defaultBuckets
+                      : metricPolicy.buckets,
+                  });
+                }}
+              >
+                <option value="DURATION">{t("Duración HTTP real")}</option>
+                <option value="CONSTANT">{t("Constante por intercambio")}</option>
+                <option value="ATTRIBUTE">{t("Atributo HTTP numérico")}</option>
+              </select>
+            </label>
+            <label>
+              {t("Instrumento")}
+              <select
+                value={metricPolicy.instrument}
+                onChange={(event) => {
+                  const instrument = event.target.value;
+                  updateMetric(metricIndex, {
+                    ...metricPolicy,
+                    instrument,
+                    buckets: instrument === "HISTOGRAM"
+                      ? metricPolicy.buckets.length
+                        ? metricPolicy.buckets
+                        : defaultBuckets
+                      : [],
+                  });
+                }}
+              >
+                <option>HISTOGRAM</option>
+                <option>COUNTER</option>
+                <option>UP_DOWN_COUNTER</option>
+              </select>
+            </label>
+            <label>
+              {t("Unidad")}
+              <input
+                value={metricPolicy.unit}
+                onChange={(event) =>
+                  updateMetric(metricIndex, {
+                    ...metricPolicy,
+                    unit: event.target.value,
+                  })
+                }
+              />
+            </label>
+          </div>
+
+          {metricPolicy.value?.source === "CONSTANT" && (
+            <label>
+              {t("Constante")}
+              <input
+                type="number"
+                value={metricPolicy.value.constant}
+                onChange={(event) =>
+                  updateMetric(metricIndex, {
+                    ...metricPolicy,
+                    value: {
+                      ...metricPolicy.value,
+                      constant: Number(event.target.value),
+                    },
+                  })
+                }
+              />
+            </label>
+          )}
+
+          {metricPolicy.value?.source === "ATTRIBUTE" && (
+            <label>
+              {t("Atributo HTTP numérico")}
+              <select
+                value={metricPolicy.value.path}
+                onChange={(event) =>
+                  updateMetric(metricIndex, {
+                    ...metricPolicy,
+                    value: {
+                      ...metricPolicy.value,
+                      path: event.target.value,
+                    },
+                  })
+                }
+              >
+                <option value="http.response.status_code">
+                  http.response.status_code
+                </option>
+                <option value="server.port">server.port</option>
+              </select>
+            </label>
+          )}
+
+          <div className="dimension-picker">
+            {standardAttributes.map((attribute) => (
+              <label className="check-line" key={attribute.name}>
+                <input
+                  type="checkbox"
+                  checked={(metricPolicy.standardAttributes || [])
+                    .includes(attribute.name)}
+                  onChange={() => {
+                    const selected = (metricPolicy.standardAttributes || [])
+                      .includes(attribute.name);
+                    updateMetric(metricIndex, {
+                      ...metricPolicy,
+                      standardAttributes: selected
+                        ? metricPolicy.standardAttributes.filter(
+                          (item) => item !== attribute.name,
+                        )
+                        : [
+                            ...(metricPolicy.standardAttributes || []),
+                            attribute.name,
+                          ],
+                    });
+                  }}
+                />
+                <span>
+                  <code>{attribute.name}</code>
+                  <small>{t(attribute.help)}</small>
+                </span>
+              </label>
+            ))}
+          </div>
+
+          <div className="section-heading small-heading">
+            <div>
+              <h4>{t("Labels de negocio desde request headers")}</h4>
+              <small>
+                {t("Cada fila extrae sólo el header indicado. El label siempre se añade a esta métrica.")}
+              </small>
+            </div>
+            <button
+              type="button"
+              className="ghost small"
+              onClick={() =>
+                updateMetric(metricIndex, {
+                  ...metricPolicy,
+                  customAttributes: [
+                    ...(metricPolicy.customAttributes || []),
+                    {
+                      source: "REQUEST_HEADER",
+                      argumentIndex: -1,
+                      path: "",
+                      constant: 1,
+                      header: "",
+                      attribute: "",
+                      destinations: [],
+                      valuePolicy: bounded(),
+                    },
+                  ],
+                })
+              }
+            >
+              {t("+ label de negocio")}
+            </button>
+          </div>
+
+          {(metricPolicy.customAttributes || []).map((attribute, attributeIndex) => (
+            <div
+              className="nested-card"
+              key={`${metricPolicy.id}-attribute-${attributeIndex}`}
+            >
+              <div className="row">
+                <label>
+                  {t("Request header")}
+                  <input
+                    placeholder="x-customer-type"
+                    value={attribute.header}
+                    onChange={(event) =>
+                      updateMetric(metricIndex, {
+                        ...metricPolicy,
+                        customAttributes: metricPolicy.customAttributes.map(
+                          (item, index) =>
+                            index === attributeIndex
+                              ? { ...item, header: event.target.value }
+                              : item,
+                        ),
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  {t("Atributo OTel / label")}
+                  <input
+                    placeholder="customer.type"
+                    value={attribute.attribute}
+                    onChange={(event) =>
+                      updateMetric(metricIndex, {
+                        ...metricPolicy,
+                        customAttributes: metricPolicy.customAttributes.map(
+                          (item, index) =>
+                            index === attributeIndex
+                              ? { ...item, attribute: event.target.value }
+                              : item,
+                        ),
+                      })
+                    }
+                  />
+                </label>
+                <label className="check-line">
+                  <input
+                    type="checkbox"
+                    checked={(attribute.destinations || []).includes("SPAN")}
+                    onChange={() =>
+                      updateMetric(metricIndex, {
+                        ...metricPolicy,
+                        customAttributes: metricPolicy.customAttributes.map(
+                          (item, index) =>
+                            index === attributeIndex
+                              ? {
+                                  ...item,
+                                  destinations: (item.destinations || [])
+                                    .includes("SPAN")
+                                    ? []
+                                    : ["SPAN"],
+                                }
+                              : item,
+                        ),
+                      })
+                    }
+                  />
+                  {t("Añadir también al span")}
+                </label>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label={t("Quitar label")}
+                  onClick={() =>
+                    updateMetric(metricIndex, {
+                      ...metricPolicy,
+                      customAttributes: metricPolicy.customAttributes.filter(
+                        (_, index) => index !== attributeIndex,
+                      ),
+                    })
+                  }
+                >
+                  ×
+                </button>
+              </div>
+              <ValuePolicyEditor
+                value={attribute.valuePolicy || bounded()}
+                onRequireSchema={requireSchema}
+                onChange={(valuePolicy) =>
+                  updateMetric(metricIndex, {
+                    ...metricPolicy,
+                    customAttributes: metricPolicy.customAttributes.map(
+                      (item, index) =>
+                        index === attributeIndex
+                          ? { ...item, valuePolicy }
+                          : item,
+                    ),
+                  })
+                }
+              />
+            </div>
+          ))}
+
+          <details className="policy-advanced-options">
+            <summary>{t("Descripción y buckets")}</summary>
+            <label>
+              {t("Descripción")}
+              <input
+                value={metricPolicy.description}
+                onChange={(event) =>
+                  updateMetric(metricIndex, {
+                    ...metricPolicy,
+                    description: event.target.value,
+                  })
+                }
+              />
+            </label>
+            {metricPolicy.instrument === "HISTOGRAM" && (
+              <label>
+                {t("Buckets explícitos")}
+                <NormalizedInput
+                  value={(metricPolicy.buckets || []).join(",")}
+                  onChange={(event) =>
+                    updateMetric(metricIndex, {
+                      ...metricPolicy,
+                      buckets: event.target.value
+                        .split(",")
+                        .map(Number)
+                        .filter(Number.isFinite),
+                    })
+                  }
+                />
+                <MetricUnitHelp unit={metricPolicy.unit} buckets />
+              </label>
+            )}
+          </details>
+        </div>
+      ))}
     </div>
   );
 }
@@ -1504,7 +1932,7 @@ function BodyEventPoliciesEditor({
     }));
 
   const duplicateEventNames = duplicateTelemetryEventNames(policy);
-  const legacyCount = legacyHTTPConfigurationCount(policy, direction);
+  const legacyCount = legacyHTTPHeaderCount(policy, direction);
 
   return (
     <section className="editor-section">
@@ -1538,14 +1966,21 @@ function BodyEventPoliciesEditor({
       </p>
       <HttpRuleQuickGuide t={t} />
 
+      <HTTPGlobalMetricsEditor
+        policy={policy}
+        setPolicy={setPolicy}
+        nameErrors={nameErrors}
+        direction={direction}
+      />
+
       {legacyCount > 0 && (
         <div className="warning-box legacy-http-warning">
           <div>
             <b>{t("Configuración HTTP heredada conservada")}</b>
             <p>
               {t("Esta policy contiene")} {legacyCount}{" "}
-              {t(legacyCount === 1 ? "captura o métrica" : "capturas o métricas")}{" "}
-              {t("del editor anterior. No se borran ni se modifican desde este formulario unificado.")}
+              {t(legacyCount === 1 ? "captura de header" : "capturas de headers")}{" "}
+              {t("del editor anterior. Se conserva y puede editarse en JSON.")}
             </p>
           </div>
           <button type="button" className="ghost small" onClick={onEditLegacy}>
@@ -1921,7 +2356,7 @@ function BodyEventPoliciesEditor({
                   <option value="EQUALS">equals</option>
                   <option value="IN">in</option>
                 </select>
-                <input
+                <NormalizedInput
                   aria-label={t("Valores")}
                   placeholder="200,201"
                   value={(condition.values || []).join(",")}
@@ -2117,6 +2552,15 @@ function BodyEventPoliciesEditor({
               {(field.destinations || []).includes("METRIC") && (
                 <ValuePolicyEditor
                   value={field.valuePolicy || bounded()}
+                  onRequireSchema={(schemaVersion) =>
+                    setPolicy((current) => ({
+                      ...current,
+                      schemaVersion: ensurePolicySchema(
+                        current.schemaVersion,
+                        schemaVersion,
+                      ),
+                    }))
+                  }
                   onChange={(valuePolicy) =>
                     updateEvent(eventIndex, {
                       ...eventPolicy,
@@ -2265,6 +2709,15 @@ function BodyEventPoliciesEditor({
                 {(field.destinations || []).includes("METRIC") && (
                   <ValuePolicyEditor
                     value={field.valuePolicy || rangePolicy()}
+                    onRequireSchema={(schemaVersion) =>
+                      setPolicy((current) => ({
+                        ...current,
+                        schemaVersion: ensurePolicySchema(
+                          current.schemaVersion,
+                          schemaVersion,
+                        ),
+                      }))
+                    }
                     onChange={(valuePolicy) =>
                       updateEvent(eventIndex, {
                         ...eventPolicy,
@@ -2293,7 +2746,7 @@ function BodyEventPoliciesEditor({
               {t("Nombre del evento (opcional)")}
               <input
                 value={eventNameOutput(eventPolicy).value}
-                placeholder="cambistapp.exchange"
+                placeholder="order.approved"
                 onChange={(event) => {
                   const current = eventNameOutput(eventPolicy);
                   const value = event.target.value;
@@ -2510,7 +2963,7 @@ function MethodPoliciesEditor({ policy, setPolicy, nameErrors }) {
           <div className="section-heading small-heading">
             <div>
               <h4>{t("Valores capturados y labels")}</h4>
-              <small>{t("SPAN y LOG conservan el valor; METRIC exige cardinalidad acotada.")}</small>
+              <small>{t("SPAN y LOG conservan el valor; para METRIC controla la cardinalidad o elige Sin control explícitamente.")}</small>
             </div>
             <button
               type="button"
@@ -2653,6 +3106,15 @@ function MethodPoliciesEditor({ policy, setPolicy, nameErrors }) {
               {item.destinations.includes("METRIC") && (
                 <ValuePolicyEditor
                   value={item.valuePolicy}
+                  onRequireSchema={(schemaVersion) =>
+                    setPolicy((current) => ({
+                      ...current,
+                      schemaVersion: ensurePolicySchema(
+                        current.schemaVersion,
+                        schemaVersion,
+                      ),
+                    }))
+                  }
                   onChange={(valuePolicy) => {
                     const captures = methodPolicy.captures.map((current, index) =>
                       index === captureIndex
@@ -2719,6 +3181,7 @@ function MethodPoliciesEditor({ policy, setPolicy, nameErrors }) {
                       updateMethod(methodIndex, { ...methodPolicy, metrics });
                     }}
                   />
+                  <MetricUnitHelp unit={item.unit} />
                 </label>
                 <label>
                   {t("Instrumento")}
@@ -2865,7 +3328,7 @@ function MethodPoliciesEditor({ policy, setPolicy, nameErrors }) {
               {item.instrument === "HISTOGRAM" && (
                 <label>
                   {t("Buckets explícitos")}
-                  <input
+                  <NormalizedInput
                     value={item.buckets.join(",")}
                     onChange={(event) => {
                       const metrics = methodPolicy.metrics.map((current, index) =>
@@ -2882,6 +3345,7 @@ function MethodPoliciesEditor({ policy, setPolicy, nameErrors }) {
                       updateMethod(methodIndex, { ...methodPolicy, metrics });
                     }}
                   />
+                  <MetricUnitHelp unit={item.unit} buckets />
                 </label>
               )}
               <button
