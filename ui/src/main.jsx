@@ -6835,10 +6835,11 @@ function App() {
           ))}
         </nav>
         <div className="protocol">
-          <span className="pulse" /> {t("OpAMP HTTP polling")}
-          <br />
+          <div className="protocol-heading">
+            <span className="pulse" />
+            <span>{t("OpAMP HTTP polling")}</span>
+          </div>
           <small>{t("Agentes y Supervisors: HTTP · 10s")}</small>
-          <br />
           <small>{t("PostgreSQL")}: {storage.status}</small>
         </div>
       </aside>

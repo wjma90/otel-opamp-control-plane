@@ -449,13 +449,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Resolve image name and build date
+      - name: Resolve image name
         id: image
         shell: bash
         run: |
           owner=${GITHUB_REPOSITORY_OWNER,,}
           echo "name=ghcr.io/${owner}/o11y-control-plane" >> "$GITHUB_OUTPUT"
-          echo "created=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -479,11 +478,6 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.image.outputs.name }}:${{ needs.metadata.outputs.version }}
-          build-args: |
-            VERSION=${{ needs.metadata.outputs.version }}
-            REVISION=${{ github.sha }}
-            BUILD_DATE=${{ steps.image.outputs.created }}
-            SOURCE_URL=${{ github.server_url }}/${{ github.repository }}
           cache-from: type=gha,scope=control-plane
           cache-to: type=gha,mode=max,scope=control-plane
           sbom: true

@@ -5,6 +5,20 @@ Las versiones siguen Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.24.9] - 2026-07-24
+
+### Removed
+
+- La imagen deja de añadir labels `org.opencontainers.image.*`.
+
+## [0.24.8] - 2026-07-24
+
+### Fixed
+
+- El sidebar expandido tiene ancho suficiente para `Remote management` y el
+  detalle `Agents and Supervisors: HTTP · 10s`, sin overflow, truncamiento ni
+  saltos de línea.
+
 ## [0.24.7] - 2026-07-24
 
 ### Changed

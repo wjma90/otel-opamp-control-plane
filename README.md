@@ -63,12 +63,7 @@ docker stop o11y-control-plane-test-postgres
 ## Imagen local
 
 ```bash
-docker build \
-  --build-arg VERSION=0.24.7 \
-  --build-arg REVISION=local \
-  --build-arg BUILD_DATE=1970-01-01T00:00:00Z \
-  --build-arg SOURCE_URL=https://github.com/OWNER/REPOSITORY \
-  -t o11y-control-plane:0.24.7 .
+docker build -t o11y-control-plane:0.24.9 .
 ```
 
 Puertos:

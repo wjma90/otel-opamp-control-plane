@@ -25,17 +25,6 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM --platform=$TARGETPLATFORM otel/opentelemetry-collector-contrib:0.156.0@sha256:125bdbeb7590cc1952c5b3430ecf14063568980c2c93d5b38676cc0446ed8108 AS collector
 
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:aef9602f8710ec12bde19d593fed1f76c708531bb7aba205110f1029786ead7b
-ARG VERSION=dev
-ARG REVISION=unknown
-ARG BUILD_DATE=unknown
-ARG SOURCE_URL=unknown
-LABEL org.opencontainers.image.title="O11y OpAMP Control Plane" \
-      org.opencontainers.image.description="Control Plane OpAMP con backend Go y UI React" \
-      org.opencontainers.image.version="$VERSION" \
-      org.opencontainers.image.revision="$REVISION" \
-      org.opencontainers.image.created="$BUILD_DATE" \
-      org.opencontainers.image.source="$SOURCE_URL" \
-      org.opencontainers.image.vendor="O11y"
 COPY --from=build --chmod=0555 /server /server
 COPY --from=collector --chmod=0555 /otelcol-contrib /otelcol-contrib
 ENV COLLECTOR_VALIDATOR_VERSION=0.156.0
