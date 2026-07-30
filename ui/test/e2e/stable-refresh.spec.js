@@ -162,3 +162,100 @@ test("Fleet keeps its visual order and focused search during live refresh", asyn
   await expect(search).toBeFocused();
   await expect(services).toHaveText(["alpha-service", "zulu-service"]);
 });
+
+test("destination preview stays fixed and only renders selector and search matches", async ({
+  page,
+}) => {
+  let agentRequests = 0;
+  const alpha = agent(
+    "alpha-pod-uid",
+    "alpha-service",
+    "2026-07-21T12:00:01Z",
+    {},
+  );
+  const zulu = agent(
+    "zulu-pod-uid",
+    "zulu-service",
+    "2026-07-21T12:00:02Z",
+    {},
+  );
+  const replacement = agent(
+    "replacement-pod-uid",
+    "replacement-service",
+    "2026-07-21T12:00:03Z",
+    {},
+  );
+
+  const responses = new Map([
+    ["/api/configs", {}],
+    ["/api/metric-names", []],
+    ["/api/audit", []],
+    ["/api/storage", { driver: "PostgreSQL", status: "ready" }],
+    ["/api/security/denylist", []],
+    ["/api/deployments", []],
+    ["/api/auth/session", identity],
+    ["/api/auth/providers", {
+      identity,
+      providers: [],
+      roles: {},
+      assignableRoles: [],
+      roleMappings: {},
+      configurations: [],
+    }],
+    ["/api/collector-base-configs", []],
+  ]);
+
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/agents") {
+      agentRequests += 1;
+      await route.fulfill(json(agentRequests === 1 ? [zulu, alpha] : [replacement]));
+      return;
+    }
+    await route.fulfill(json(responses.get(path) ?? {}));
+  });
+
+  await page.goto("/policy-studio?target=java-extension&step=3");
+
+  const selector = page.locator("section.target-selector");
+  const rows = selector.locator(".target-row:not(.head)");
+  const search = selector.getByRole("textbox", {
+    name: "Buscar en el inventario",
+  });
+
+  await expect(rows).toHaveCount(2);
+  await selector.getByRole("checkbox", {
+    name: "alpha-service",
+    exact: true,
+  }).check();
+  await expect(rows).toHaveCount(1);
+  await expect(rows).toContainText("alpha-service");
+  await expect(selector.getByText("No coincide")).toHaveCount(0);
+
+  await search.fill("missing-service");
+  await expect(rows).toHaveCount(0);
+  await expect(selector.getByText("Ninguno", { exact: true })).toBeVisible();
+
+  await search.clear();
+  await expect(rows).toHaveCount(1);
+  await expect(rows).toContainText("alpha-service");
+
+  await expect.poll(() => agentRequests, {
+    message: "the live inventory should continue polling in the background",
+    timeout: 7_000,
+  }).toBeGreaterThanOrEqual(2);
+  await expect(rows).toHaveCount(1);
+  await expect(rows).toContainText("alpha-service");
+  await expect(selector.getByRole("checkbox", {
+    name: "replacement-service",
+    exact: true,
+  })).toHaveCount(0);
+
+  await selector.getByRole("button", { name: "Actualizar inventario" }).click();
+  await expect(rows).toHaveCount(0);
+  await expect(selector.getByText("Ninguno", { exact: true })).toBeVisible();
+  await expect(selector.getByRole("checkbox", {
+    name: "replacement-service",
+    exact: true,
+  })).toBeVisible();
+});

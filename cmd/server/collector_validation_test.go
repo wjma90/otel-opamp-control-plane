@@ -112,6 +112,17 @@ service:
 	}
 }
 
+func TestCollectorPreflightDoesNotRestrictCollectorComponents(t *testing.T) {
+	body, err := os.ReadFile("testdata/collector-filter-debug.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := validateCollectorConfigReferences(string(body)); err != nil {
+		t.Fatalf("component compatibility must be delegated to otelcol-contrib: %v", err)
+	}
+}
+
 func TestCollectorConfigReferencesRejectUnsafeProvidersAndAmbiguousForms(t *testing.T) {
 	tests := map[string]string{
 		"file provider":         `${file:/etc/passwd}`,

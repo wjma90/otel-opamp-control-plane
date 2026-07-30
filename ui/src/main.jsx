@@ -103,6 +103,11 @@ import {
 import { tabFromLocation, urlForTab } from "./navigation.js";
 import { matchesAnySelection } from "./multi-select-filter.js";
 import {
+  createTargetInventorySnapshot,
+  filterVisibleTargetAgents,
+  matchesTargetSelector,
+} from "./target-selection.js";
+import {
   I18nProvider,
   translatedOptions,
   useI18n,
@@ -721,6 +726,7 @@ function TargetSelector({
   setSelectedServices,
   selectorAttributes,
   setSelectorAttributes,
+  onRefreshInventory,
 }) {
   const { t } = useI18n();
   const services = unique(agents.map((agent) => agent.Service)).sort();
@@ -731,34 +737,17 @@ function TargetSelector({
   const unavailableSelectedServices = selectedServices.filter(
     (service) => !services.includes(service),
   );
-  const hasInstanceFilter = selectedAgentIds.length > 0;
-  const hasServiceFilter = selectedServices.length > 0;
-  const attributes = selectorAttributes.filter(
-    (attribute) => attribute.key && attribute.value,
+  const selection = {
+    selectedAgentIds,
+    selectedServices,
+    selectorAttributes,
+  };
+  const matchingAgents = agents.filter((agent) =>
+    matchesTargetSelector(agent, selection),
   );
-
-  const matches = (agent) =>
-    (!hasInstanceFilter || selectedAgentIds.includes(agent.UID)) &&
-    (!hasServiceFilter || selectedServices.includes(agent.Service)) &&
-    attributes.every(
-      (attribute) => agent.Attributes?.[attribute.key] === attribute.value,
-    );
-
-  const matchingAgents = agents.filter(matches);
-  const normalizedQuery = query.trim().toLowerCase();
-  const visibleAgents = agents.filter((agent) => {
-    if (!normalizedQuery) return true;
-    return [
-      agent.UID,
-      agent.Service,
-      ...Object.entries(agent.Attributes || {}).flatMap(([key, value]) => [
-        key,
-        value,
-      ]),
-    ]
-      .join(" ")
-      .toLowerCase()
-      .includes(normalizedQuery);
+  const visibleAgents = filterVisibleTargetAgents(agents, {
+    ...selection,
+    query,
   });
 
   const toggleService = (service) =>
@@ -775,13 +764,25 @@ function TargetSelector({
           <p className="eyebrow">{t("ENVIAR A DESTINOS")}</p>
           <h3>{t("Selecciona quién recibirá esta versión")}</h3>
         </div>
-        <strong className="match-count">
-          {matchingAgents.length} {t("de")} {agents.length} {t("coinciden")}
-        </strong>
+        <div className="target-inventory-state">
+          <strong className="match-count">
+            {matchingAgents.length} {t("de")} {agents.length} {t("coinciden")}
+            {query.trim() && (
+              <> · {visibleAgents.length} {t("visibles")}</>
+            )}
+          </strong>
+          <button
+            type="button"
+            className="ghost small"
+            onClick={onRefreshInventory}
+          >
+            {t("Actualizar inventario")}
+          </button>
+        </div>
       </div>
 
       <p className="hint">
-        {t("Instance IDs, servicios y resource attributes se combinan con lógica AND. Esta lista sólo contiene clientes conectados: Supervisors en CONNECTED y extensiones Java en ONLINE. Un selector vacío abarca todos los destinos conectados mostrados.")}
+        {t("Instance IDs, servicios y resource attributes se combinan con lógica AND. La tabla muestra sólo los destinos que cumplen los selectores y la búsqueda. El inventario permanece fijo mientras revisas; actualízalo manualmente cuando lo necesites.")}
       </p>
 
       {(unavailableSelectedIds.length > 0 ||
@@ -922,13 +923,18 @@ function TargetSelector({
             <span>
               {agent.ConfigID ? `${agent.ConfigID} · v${agent.Version}` : t("Sin configuración")}
             </span>
-            <em className={`match-result ${matches(agent) ? "yes" : "no"}`}>
-              {t(matches(agent) ? "Recibirá" : "No coincide")}
+            <em className="match-result yes">
+              {t("Recibirá")}
             </em>
           </label>
         ))}
         {!visibleAgents.length && (
-          <div className="empty">{t("No hay destinos conectados con la búsqueda.")}</div>
+          <div className="empty target-empty">
+            <b>{t("Ninguno")}</b>
+            <span>
+              {t("No hay destinos que cumplan los selectores y la búsqueda.")}
+            </span>
+          </div>
         )}
       </div>
 
@@ -6458,6 +6464,7 @@ function App() {
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [activeStep, setActiveStep] = useState(useRestoredStep || initialStep);
+  const [destinationAgentSnapshot, setDestinationAgentSnapshot] = useState(null);
   const [draftRecoveryVisible, setDraftRecoveryVisible] = useState(Boolean(restoredDraft));
   const [menuCollapsed, setMenuCollapsed] = useState(
     () => window.localStorage.getItem("o11y.sidebar.collapsed") === "true",
@@ -6545,6 +6552,7 @@ function App() {
       "# Escribe una configuración completa del OpenTelemetry Collector\n",
     );
     setReportedConfigKey("");
+    setDestinationAgentSnapshot(null);
     setNotice(message);
     setActiveStep(1);
   };
@@ -6766,6 +6774,21 @@ function App() {
   const targetAgents = compatibleTargetAgents.filter(isConnectedTarget);
   const unavailableTargetCount =
     compatibleTargetAgents.length - targetAgents.length;
+  const destinationAgents =
+    activeStep >= 3 && destinationAgentSnapshot !== null
+      ? destinationAgentSnapshot
+      : targetAgents;
+
+  useEffect(() => {
+    if (loginRequired) return;
+    if (activeStep >= 3) {
+      setDestinationAgentSnapshot((current) =>
+        current ?? createTargetInventorySnapshot(targetAgents),
+      );
+      return;
+    }
+    setDestinationAgentSnapshot(null);
+  }, [activeStep, loginRequired, target]);
 
   const reportedCollectorConfigs = targetAgents.flatMap((agent) =>
     Object.entries(agent.EffectiveConfig || {}).map(([name, file]) => ({
@@ -6786,14 +6809,14 @@ function App() {
     ),
   };
 
-  const matchesSelector = (agent) =>
-    (!selector.InstanceUIDs.length || selector.InstanceUIDs.includes(agent.UID)) &&
-    (!selector.Services.length || selector.Services.includes(agent.Service)) &&
-    Object.entries(selector.Attributes).every(
-      ([key, value]) => agent.Attributes?.[key] === value,
-    );
-
-  const matchingTargetAgents = targetAgents.filter(matchesSelector);
+  const destinationSelection = {
+    selectedAgentIds,
+    selectedServices,
+    selectorAttributes,
+  };
+  const matchingTargetAgents = destinationAgents.filter((agent) =>
+    matchesTargetSelector(agent, destinationSelection),
+  );
 
   const body =
     target === "collector"
@@ -6883,6 +6906,7 @@ function App() {
     setAgentQuery("");
     setReportedConfigKey("");
     setCollectorValidation(null);
+    setDestinationAgentSnapshot(null);
     setNotice("");
     setActiveStep(1);
   };
@@ -7664,7 +7688,7 @@ function App() {
                       </div>
                     </div>
                     <TargetSelector
-                      agents={targetAgents}
+                      agents={destinationAgents}
                       query={agentQuery}
                       setQuery={setAgentQuery}
                       selectedAgentIds={selectedAgentIds}
@@ -7673,6 +7697,11 @@ function App() {
                       setSelectedServices={setSelectedServices}
                       selectorAttributes={selectorAttributes}
                       setSelectorAttributes={setSelectorAttributes}
+                      onRefreshInventory={() =>
+                        setDestinationAgentSnapshot(
+                          createTargetInventorySnapshot(targetAgents),
+                        )
+                      }
                     />
                     {incompatibleSchemaTargets.length > 0 && (
                       <div className="warning-box" role="alert">
@@ -7716,7 +7745,7 @@ function App() {
                       </div>
                       <div>
                         <small>{t("Destinos conectados coincidentes")}</small>
-                        <b>{matchingTargetAgents.length} {t("de")} {targetAgents.length}</b>
+                        <b>{matchingTargetAgents.length} {t("de")} {destinationAgents.length}</b>
                       </div>
                       <div>
                         <small>{t("Schema requerido")}</small>

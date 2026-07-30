@@ -1,0 +1,24 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+
+processors:
+  filter/currency-debug:
+    error_mode: ignore
+    metric_conditions:
+      - 'not IsMatch(metric.name, "^currency.*")'
+
+exporters:
+  debug/currency:
+    verbosity: detailed
+
+service:
+  pipelines:
+    metrics/currency-debug:
+      receivers:
+        - otlp
+      processors:
+        - filter/currency-debug
+      exporters:
+        - debug/currency

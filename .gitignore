@@ -3,6 +3,7 @@
 /HANDOFF.md
 /TESTING.md
 /docs/
+/scripts/preflight.sh
 
 # Node.js / Vite / Playwright
 **/node_modules/

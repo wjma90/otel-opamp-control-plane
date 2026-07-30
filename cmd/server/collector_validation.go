@@ -47,10 +47,6 @@ func validateCollectorWithBinary(parent context.Context, body string) (collector
 		result.Output = err.Error()
 		return result, nil
 	}
-	if err := validateCollectorConfigSafety(body); err != nil {
-		result.Output = err.Error()
-		return result, nil
-	}
 	file, err := os.CreateTemp("", "o11y-collector-*.yaml")
 	if err != nil {
 		return result, fmt.Errorf("create temporary Collector config: %w", err)

@@ -5,6 +5,26 @@ Las versiones siguen Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.25.3] - 2026-07-25
+
+### Fixed
+
+- El paso Destinos mantiene una instantánea estable del inventario mientras se
+  revisan los destinatarios; el polling vivo ya no reordena ni reemplaza las
+  filas y existe una actualización manual explícita.
+- La tabla combina selectores y búsqueda, muestra únicamente destinos que
+  recibirían la versión y presenta `Ninguno` cuando no hay coincidencias.
+
+## [0.25.2] - 2026-07-25
+
+### Removed
+
+- Se retiró la allowlist semántica de componentes y topología Collector. El
+  editor delega la compatibilidad del YAML al binario real
+  `otelcol-contrib 0.156.0`; conserva el preflight que impide providers de
+  archivos, HTTP y variables de entorno no autorizadas dentro del proceso
+  validador.
+
 ## [0.24.11] - 2026-07-24
 
 ### Fixed

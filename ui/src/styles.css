@@ -1077,6 +1077,13 @@ h4 {
   padding: 7px 11px;
   font: 700 11px "Space Mono";
 }
+.target-inventory-state {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 .selector-services {
   display: flex;
   flex-wrap: wrap;
@@ -1209,9 +1216,14 @@ h4 {
   background: #e7f8e9;
   color: #267331;
 }
-.match-result.no {
-  background: #f1f2f1;
-  color: #7f8a85;
+.target-empty {
+  display: grid;
+  gap: 3px;
+  padding: 22px 12px;
+  text-align: center;
+}
+.target-empty b {
+  color: #263b31;
 }
 .selector-actions {
   display: flex;
