@@ -346,9 +346,14 @@ jobs:
           docker cp "$container:/otelcol-contrib" "$stage/otelcol-contrib"
           chmod 0555 "$stage/o11y-control-plane" "$stage/otelcol-contrib"
 
-          cp VERSION README.md CHANGELOG.md "$stage/"
+          cp VERSION CHANGELOG.md "$stage/"
 
           tar -C "$RUNNER_TEMP" -czf "${package}.tar.gz" "$package"
+          if tar -tzf "${package}.tar.gz" |
+             grep -Ei '(^|/)README\.md$' >/dev/null; then
+            echo "portable package must not contain README.md" >&2
+            exit 1
+          fi
 
       - name: Upload package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -389,6 +394,10 @@ jobs:
             --app-version "${VERSION}" \
             --destination chart-package
           test -s "chart-package/o11y-control-plane-${VERSION}.tgz"
+          test -n "$(
+            helm show readme \
+              "chart-package/o11y-control-plane-${VERSION}.tgz"
+          )"
 
       - name: Upload chart
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
