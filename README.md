@@ -1,1 +1,1 @@
-Esta versión `0.25.3` incluye el backend Go, la UI React y OpenTelemetry Collector Contrib `0.156.0` embebido como validador en una única imagen.
+Esta versión `0.25.4-opamp.0.23.0-otelcol.0.156.0` usa `opamp-go 0.23.0` y OpenTelemetry Collector Contrib `0.156.0` como validador embebido.

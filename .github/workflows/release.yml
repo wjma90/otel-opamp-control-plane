@@ -31,6 +31,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      control_plane_version: ${{ steps.version.outputs.control_plane_version }}
+      opamp_version: ${{ steps.version.outputs.opamp_version }}
+      collector_version: ${{ steps.version.outputs.collector_version }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -41,8 +44,102 @@ jobs:
         run: |
           set -euo pipefail
           version=$(tr -d '[:space:]' < VERSION)
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "VERSION must use X.Y.Z" >&2
+          if [[ ! "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-opamp\.([0-9]+\.[0-9]+\.[0-9]+)-otelcol\.([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "VERSION must use <control-plane>-opamp.<opamp-go>-otelcol.<collector>" >&2
+            exit 1
+          fi
+          control_plane_version=${BASH_REMATCH[1]}
+          opamp_version=${BASH_REMATCH[2]}
+          collector_version=${BASH_REMATCH[3]}
+
+          go_opamp_version=$(
+            awk '
+              $1 == "github.com/open-telemetry/opamp-go" {
+                sub(/^v/, "", $2)
+                print $2
+                exit
+              }
+            ' go.mod
+          )
+          docker_collector_version=$(
+            awk -F= '
+              $1 == "ARG OTEL_COLLECTOR_VERSION" {
+                print $2
+                exit
+              }
+            ' Dockerfile
+          )
+          docker_collector_digest=$(
+            awk -F= '
+              $1 == "ARG OTEL_COLLECTOR_DIGEST" {
+                print $2
+                exit
+              }
+            ' Dockerfile
+          )
+          chart_version=$(
+            awk '
+              $1 == "version:" {
+                gsub(/"/, "", $2)
+                print $2
+                exit
+              }
+            ' charts/o11y-control-plane/Chart.yaml
+          )
+          chart_app_version=$(
+            awk '
+              $1 == "appVersion:" {
+                gsub(/"/, "", $2)
+                print $2
+                exit
+              }
+            ' charts/o11y-control-plane/Chart.yaml
+          )
+          chart_collector_version=$(
+            awk '
+              $1 == "collectorValidatorVersion:" {
+                gsub(/"/, "", $2)
+                print $2
+                exit
+              }
+            ' charts/o11y-control-plane/values.yaml
+          )
+          expected_collector_image="otel/opentelemetry-collector-contrib:${collector_version}@${docker_collector_digest}"
+
+          if [[ "$opamp_version" != "$go_opamp_version" ]]; then
+            echo "VERSION OpAMP segment must match go.mod opamp-go ${go_opamp_version}" >&2
+            exit 1
+          fi
+          if [[ "$collector_version" != "$docker_collector_version" ]]; then
+            echo "VERSION Collector segment must match the Dockerfile" >&2
+            exit 1
+          fi
+          if [[ "$collector_version" != "$chart_collector_version" ]]; then
+            echo "VERSION Collector segment must match the chart values" >&2
+            exit 1
+          fi
+          if [[ "$COLLECTOR_IMAGE" != "$expected_collector_image" ]]; then
+            echo "COLLECTOR_IMAGE must match the Dockerfile Collector version and digest" >&2
+            exit 1
+          fi
+          if [[ "$chart_version" != "$version" ]]; then
+            echo "VERSION and chart version must match" >&2
+            exit 1
+          fi
+          if [[ "$chart_app_version" != "$version" ]]; then
+            echo "VERSION and chart appVersion must match" >&2
+            exit 1
+          fi
+          if ! grep -Fqx \
+            "FROM --platform=\$TARGETPLATFORM otel/opentelemetry-collector-contrib:\${OTEL_COLLECTOR_VERSION}@\${OTEL_COLLECTOR_DIGEST} AS collector" \
+            Dockerfile; then
+            echo "Dockerfile Collector FROM must use the pinned ARGs" >&2
+            exit 1
+          fi
+          if ! grep -Fqx \
+            "ENV COLLECTOR_VALIDATOR_VERSION=\${OTEL_COLLECTOR_VERSION}" \
+            Dockerfile; then
+            echo "Dockerfile validator metadata must use the Collector ARG" >&2
             exit 1
           fi
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
@@ -52,9 +149,15 @@ jobs:
               exit 1
             fi
           fi
-          bash scripts/release-notes.sh "$version" CHANGELOG.md > /tmp/release-notes.md
-          test -s /tmp/release-notes.md
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          release_notes="${RUNNER_TEMP}/control-plane-release-notes.md"
+          bash scripts/release-notes.sh "$version" CHANGELOG.md > "$release_notes"
+          test -s "$release_notes"
+          {
+            echo "version=$version"
+            echo "control_plane_version=$control_plane_version"
+            echo "opamp_version=$opamp_version"
+            echo "collector_version=$collector_version"
+          } >> "$GITHUB_OUTPUT"
 
   verify:
     name: UI, Go and PostgreSQL tests
@@ -591,6 +694,9 @@ jobs:
       - name: Generate checksums and release notes
         env:
           VERSION: ${{ needs.metadata.outputs.version }}
+          CONTROL_PLANE_VERSION: ${{ needs.metadata.outputs.control_plane_version }}
+          OPAMP_VERSION: ${{ needs.metadata.outputs.opamp_version }}
+          COLLECTOR_VERSION: ${{ needs.metadata.outputs.collector_version }}
           IMAGE: ${{ needs.image.outputs.image }}
           DIGEST: ${{ needs.image.outputs.digest }}
         working-directory: .
@@ -603,6 +709,12 @@ jobs:
             sha256sum ./*.tar.gz ./*.tgz | sort -k2 > SHA256SUMS
           )
           {
+            echo "## Compatibilidad"
+            echo
+            echo "- Control Plane: \`${CONTROL_PLANE_VERSION}\`"
+            echo "- opamp-go: \`${OPAMP_VERSION}\`"
+            echo "- otelcol-contrib validador: \`${COLLECTOR_VERSION}\`"
+            echo
             echo "## Imagen OCI"
             echo
             echo "\`${IMAGE}:${VERSION}\`"

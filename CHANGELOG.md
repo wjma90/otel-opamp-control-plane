@@ -5,6 +5,14 @@ Las versiones siguen Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.25.4-opamp.0.23.0-otelcol.0.156.0] - 2026-07-30
+
+### Changed
+
+- La versión publicable identifica la versión propia del Control Plane,
+  `opamp-go` y el Collector Contrib embebido como validador.
+- Los artefactos no Helm excluyen `README.md`; el chart conserva su README.
+
 ## [0.25.3] - 2026-07-25
 
 ### Fixed
