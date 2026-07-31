@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "o11y-control-plane.validatorConfigMapName" . }}
+  labels:
+    {{- include "o11y-control-plane.labels" . | nindent 4 }}
+data:
+  allowed-environment.json: |
+    {{- toPrettyJson .Values.validator.allowedEnvironment | nindent 4 }}
+  invalid-credential: o11y-validator-no-api-access
+  namespace: {{ .Values.validator.kubernetesSandbox.namespace | quote }}

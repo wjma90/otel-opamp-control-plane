@@ -60,6 +60,8 @@ spec:
               value: {{ .Values.config.trustedProxyCIDRs | quote }}
             - name: COLLECTOR_VALIDATOR_VERSION
               value: {{ .Values.config.collectorValidatorVersion | quote }}
+            - name: COLLECTOR_VALIDATOR_ENV_FILE
+              value: /etc/o11y/collector-validator/allowed-environment.json
             - name: MASTER_USERNAME
               valueFrom:
                 secretKeyRef:
@@ -145,6 +147,12 @@ spec:
               mountPath: {{ .Values.validator.hostfs.mountPath }}
               readOnly: true
             {{- end }}
+            - name: validator-config
+              mountPath: /etc/o11y/collector-validator
+              readOnly: true
+            - name: validator-serviceaccount
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
             {{- if .Values.tmp.enabled }}
             - name: tmp
               mountPath: {{ .Values.tmp.mountPath }}
@@ -191,6 +199,29 @@ spec:
           emptyDir: {}
           {{- end }}
         {{- end }}
+        - name: validator-config
+          configMap:
+            name: {{ include "o11y-control-plane.validatorConfigMapName" . }}
+            defaultMode: 0444
+            items:
+              - key: allowed-environment.json
+                path: allowed-environment.json
+        - name: validator-serviceaccount
+          projected:
+            defaultMode: 0444
+            sources:
+              - configMap:
+                  name: {{ include "o11y-control-plane.validatorConfigMapName" . }}
+                  items:
+                    - key: invalid-credential
+                      path: token
+                    - key: namespace
+                      path: namespace
+              - configMap:
+                  name: {{ .Values.validator.kubernetesSandbox.rootCAConfigMapName | quote }}
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
         {{- if .Values.tmp.enabled }}
         - name: tmp
           {{- if or .Values.tmp.medium .Values.tmp.sizeLimit }}

@@ -101,6 +101,18 @@ saml:
       group: cert-manager.io
 
 validator:
+  allowedEnvironment:
+    - name: POD_NAME
+      value: o11y-validation-pod
+    - name: K8S_POD_NAME
+      value: o11y-validation-pod
+    - name: K8S_NODE_NAME
+      value: o11y-validation-node
+    - name: K8S_NODE_IP
+      value: 127.0.0.1
+  kubernetesSandbox:
+    rootCAConfigMapName: kube-root-ca.crt
+    namespace: o11y-validation
   hostfs:
     enabled: true
     mountPath: /hostfs

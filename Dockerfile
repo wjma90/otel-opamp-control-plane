@@ -27,9 +27,16 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 FROM --platform=$TARGETPLATFORM otel/opentelemetry-collector-contrib:${OTEL_COLLECTOR_VERSION}@${OTEL_COLLECTOR_DIGEST} AS collector
 
-FROM gcr.io/distroless/static-debian12:nonroot@sha256:aef9602f8710ec12bde19d593fed1f76c708531bb7aba205110f1029786ead7b
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:aef9602f8710ec12bde19d593fed1f76c708531bb7aba205110f1029786ead7b AS runtime-base
+
+FROM runtime-base
 COPY --from=build --chmod=0555 /server /server
 COPY --from=collector --chmod=0555 /otelcol-contrib /otelcol-contrib
+COPY --chmod=0555 config/collector-validator/namespace /var/run/secrets/kubernetes.io/serviceaccount/namespace
+COPY --from=runtime-base --chmod=0444 /etc/ssl/certs/ca-certificates.crt /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+COPY --chmod=0444 config/collector-validator/token /var/run/secrets/kubernetes.io/serviceaccount/token
+COPY --chmod=0444 config/collector-validator/namespace /var/run/secrets/kubernetes.io/serviceaccount/namespace
+COPY --chmod=0555 config/collector-validator/hostfs-placeholder /hostfs/.o11y-validation
 ARG OTEL_COLLECTOR_VERSION
 ENV COLLECTOR_VALIDATOR_VERSION=${OTEL_COLLECTOR_VERSION}
 USER 65532:65532

@@ -17,8 +17,17 @@ helm template control-plane "${chart_dir}" --namespace o11y > "${tmp_dir}/defaul
 
 grep -q '^kind: Deployment$' "${tmp_dir}/default.yaml"
 grep -q '^kind: Service$' "${tmp_dir}/default.yaml"
+grep -q '^kind: ConfigMap$' "${tmp_dir}/default.yaml"
 grep -q 'readOnlyRootFilesystem: true' "${tmp_dir}/default.yaml"
 grep -q 'automountServiceAccountToken: false' "${tmp_dir}/default.yaml"
+grep -q 'name: COLLECTOR_VALIDATOR_ENV_FILE' "${tmp_dir}/default.yaml"
+grep -q 'value: /etc/o11y/collector-validator/allowed-environment.json' "${tmp_dir}/default.yaml"
+grep -q '"name": "K8S_POD_NAME"' "${tmp_dir}/default.yaml"
+grep -q 'invalid-credential: o11y-validator-no-api-access' "${tmp_dir}/default.yaml"
+grep -q 'path: token' "${tmp_dir}/default.yaml"
+grep -q 'name: validator-serviceaccount' "${tmp_dir}/default.yaml"
+grep -q 'mountPath: /var/run/secrets/kubernetes.io/serviceaccount' "${tmp_dir}/default.yaml"
+grep -q 'name: "kube-root-ca.crt"' "${tmp_dir}/default.yaml"
 grep -q 'name: OPAMP_TLS_ENABLED' "${tmp_dir}/default.yaml"
 grep -q 'value: "false"' "${tmp_dir}/default.yaml"
 if grep -q 'OPAMP_TLS_CERT_FILE\\|mountPath: /etc/o11y/opamp-tls' "${tmp_dir}/default.yaml"; then
@@ -83,6 +92,41 @@ if helm template invalid-tls-url "${chart_dir}" \
   --set opampTls.enabled=true \
   --set opampTls.existingSecret=control-plane-opamp-tls > "${tmp_dir}/invalid-tls-url.yaml" 2>&1; then
   echo "TLS mode with an HTTP public URL must fail rendering" >&2
+  exit 1
+fi
+
+helm template custom-validator "${chart_dir}" \
+  --set validator.allowedEnvironment[0].name=POD_NAME \
+  --set validator.allowedEnvironment[0].value=custom-validation-pod \
+  --set validator.allowedEnvironment[1].name=CLUSTER_NAME \
+  --set validator.allowedEnvironment[1].value=custom-cluster \
+  --set validator.allowedEnvironment[2].name=K8S_NODE_IP \
+  --set validator.allowedEnvironment[2].value=127.0.0.2 \
+  --set validator.allowedEnvironment[3].name=K8S_NODE_NAME \
+  --set validator.allowedEnvironment[3].value=custom-node \
+  > "${tmp_dir}/custom-validator.yaml"
+grep -q '"name": "CLUSTER_NAME"' "${tmp_dir}/custom-validator.yaml"
+grep -q '"value": "custom-cluster"' "${tmp_dir}/custom-validator.yaml"
+
+if helm template duplicate-validator "${chart_dir}" \
+  --set validator.allowedEnvironment[0].name=POD_NAME \
+  --set validator.allowedEnvironment[1].name=POD_NAME \
+  > "${tmp_dir}/duplicate-validator.yaml" 2>&1; then
+  echo "duplicated validator environment names must fail rendering" >&2
+  exit 1
+fi
+
+if helm template reserved-validator "${chart_dir}" \
+  --set validator.allowedEnvironment[0].name=KUBERNETES_SERVICE_HOST \
+  > "${tmp_dir}/reserved-validator.yaml" 2>&1; then
+  echo "reserved validator environment names must fail rendering" >&2
+  exit 1
+fi
+
+if helm template unsafe-serviceaccount "${chart_dir}" \
+  --set automountServiceAccountToken=true \
+  > "${tmp_dir}/unsafe-serviceaccount.yaml" 2>&1; then
+  echo "the Control Plane must not mount a real Kubernetes service account token" >&2
   exit 1
 fi
 

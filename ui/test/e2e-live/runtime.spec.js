@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { readFileSync } from "node:fs";
 
 const requiredEnvironment = (name) => {
   const value = process.env[name];
@@ -10,6 +11,13 @@ const requiredEnvironment = (name) => {
 
 const username = requiredEnvironment("O11Y_E2E_USERNAME");
 const password = requiredEnvironment("O11Y_E2E_PASSWORD");
+const kubernetesCollectorConfig = readFileSync(
+  new URL(
+    "../../../cmd/server/testdata/collector-kubernetes-infra.yaml",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 const isGoogleResource = (requestURL) => {
   const hostname = new URL(requestURL).hostname.toLowerCase();
@@ -102,5 +110,36 @@ test("the deployed Control Plane renders an empty remote-management state", asyn
   )).toBeVisible();
   await expect(page.getByText("No hay policies que coincidan.")).toBeVisible();
   await expect(page.locator("#root")).not.toBeEmpty();
+  browser.assertClean();
+});
+
+test("the deployed UI validates Kubernetes infrastructure Collector YAML", async ({ page }) => {
+  const browser = observeBrowserFailures(page);
+  await login(page, "/policy-studio");
+  browser.markAuthenticated();
+
+  await expect(page.getByRole("heading", {
+    name: "Editor OTel",
+  })).toBeVisible();
+  await page.locator(".scope-card").filter({ hasText: "Collector" }).click();
+  await page.getByLabel("ID de configuración").fill("e2e-kubernetes-infra");
+  await page.getByRole("button", { name: /Continuar: Edición/ }).click();
+  await page.locator("textarea.code.extra-large").fill(kubernetesCollectorConfig);
+
+  const [validationResponse] = await Promise.all([
+    page.waitForResponse((response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/configs/validate"),
+    page.getByRole("button", {
+      name: "Validar YAML con Collector",
+      exact: true,
+    }).click(),
+  ]);
+  expect(
+    validationResponse.ok(),
+    `Collector validation returned HTTP ${validationResponse.status()}`,
+  ).toBeTruthy();
+  await expect(page.getByText("YAML válido", { exact: true })).toBeVisible();
+  await expect(page.getByText("otelcol-contrib 0.156.0", { exact: true })).toBeVisible();
   browser.assertClean();
 });

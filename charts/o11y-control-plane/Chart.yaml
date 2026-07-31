@@ -2,8 +2,8 @@ apiVersion: v2
 name: o11y-control-plane
 description: O11y OpAMP Control Plane with embedded React UI
 type: application
-version: 0.25.5-opamp.0.23.0-otelcol.0.156.0
-appVersion: "0.25.5-opamp.0.23.0-otelcol.0.156.0"
+version: 0.25.6-opamp.0.23.0-otelcol.0.156.0
+appVersion: "0.25.6-opamp.0.23.0-otelcol.0.156.0"
 kubeVersion: ">=1.28.0-0"
 keywords:
   - opamp

@@ -61,7 +61,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 {{- end }}
 
+{{- define "o11y-control-plane.validatorConfigMapName" -}}
+{{- printf "%s-validator" (include "o11y-control-plane.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
 {{- define "o11y-control-plane.validate" -}}
+{{- if .Values.automountServiceAccountToken }}
+{{- fail "automountServiceAccountToken must remain false; the validator uses a synthetic serviceAccount sandbox" }}
+{{- end }}
 {{- if and (eq .Values.config.opampAuthMode "token") (not .Values.auth.opampToken.existingSecret) }}
 {{- fail "auth.opampToken.existingSecret is required when config.opampAuthMode=token" }}
 {{- end }}
@@ -76,5 +83,22 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 {{- if and .Values.saml.certManager.enabled (not .Values.saml.certManager.createIssuer) (not .Values.saml.certManager.issuerRef.name) }}
 {{- fail "saml.certManager.issuerRef.name is required when createIssuer=false" }}
+{{- end }}
+{{- if gt (len .Values.validator.allowedEnvironment) 32 }}
+{{- fail "validator.allowedEnvironment cannot contain more than 32 entries" }}
+{{- end }}
+{{- $reserved := list "HOME" "TMPDIR" "KUBERNETES_SERVICE_HOST" "KUBERNETES_SERVICE_PORT" "KUBERNETES_SERVICE_PORT_HTTPS" "KUBERNETES_PORT" "COLLECTOR_VALIDATOR_ENV_FILE" }}
+{{- $seen := dict }}
+{{- range .Values.validator.allowedEnvironment }}
+{{- if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" .name) }}
+{{- fail (printf "validator.allowedEnvironment contains invalid name %q" .name) }}
+{{- end }}
+{{- if has .name $reserved }}
+{{- fail (printf "validator.allowedEnvironment name %q is reserved" .name) }}
+{{- end }}
+{{- if hasKey $seen .name }}
+{{- fail (printf "validator.allowedEnvironment name %q is duplicated" .name) }}
+{{- end }}
+{{- $_ := set $seen .name true }}
 {{- end }}
 {{- end }}

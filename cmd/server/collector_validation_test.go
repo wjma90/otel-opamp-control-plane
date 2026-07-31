@@ -78,11 +78,19 @@ func TestInvalidCollectorConfigIsNotPersistedOrPublished(t *testing.T) {
 }
 
 func TestCollectorValidationEnvironmentUsesOnlySafePlaceholders(t *testing.T) {
-	environment := collectorValidationEnvironment()
+	t.Setenv(collectorValidatorEnvironmentFileVariable, "")
+	variables, err := collectorValidationVariables()
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment := collectorValidationProcessEnvironment(variables)
 	want := []string{
 		"HOME=/tmp",
 		"TMPDIR=/tmp",
+		"KUBERNETES_SERVICE_HOST=127.0.0.1",
+		"KUBERNETES_SERVICE_PORT=443",
 		"POD_NAME=o11y-validation-pod",
+		"K8S_POD_NAME=o11y-validation-pod",
 		"K8S_NODE_NAME=o11y-validation-node",
 		"K8S_NODE_IP=127.0.0.1",
 	}
@@ -96,7 +104,76 @@ func TestCollectorValidationEnvironmentUsesOnlySafePlaceholders(t *testing.T) {
 	}
 }
 
+func TestCollectorValidationEnvironmentDoesNotInheritBackendSecrets(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://must-not-leak")
+	t.Setenv("OPAMP_TOKEN", "must-not-leak")
+	t.Setenv(collectorValidatorEnvironmentFileVariable, "")
+	variables, err := collectorValidationVariables()
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment := strings.Join(collectorValidationProcessEnvironment(variables), "\n")
+	for _, secret := range []string{"DATABASE_URL", "OPAMP_TOKEN", "must-not-leak"} {
+		if strings.Contains(environment, secret) {
+			t.Fatalf("backend secret leaked to validation process: %s", environment)
+		}
+	}
+}
+
+func TestCollectorValidationEnvironmentFileIsReloaded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "environment.json")
+	t.Setenv(collectorValidatorEnvironmentFileVariable, path)
+	writeValidationEnvironment(t, path, `[
+  {"name":"POD_NAME","value":"first-pod"},
+  {"name":"CUSTOM_CLUSTER","value":"first-cluster"}
+]`)
+
+	first, err := collectorValidationVariables()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := first[1].Value; got != "first-cluster" {
+		t.Fatalf("unexpected first value %q", got)
+	}
+
+	writeValidationEnvironment(t, path, `[
+  {"name":"POD_NAME","value":"second-pod"},
+  {"name":"CUSTOM_CLUSTER","value":"second-cluster"}
+]`)
+	second, err := collectorValidationVariables()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := second[1].Value; got != "second-cluster" {
+		t.Fatalf("projected ConfigMap update was not reloaded: %q", got)
+	}
+}
+
+func TestCollectorValidationEnvironmentFileFailsClosed(t *testing.T) {
+	tests := map[string]string{
+		"empty":          `[]`,
+		"unknown field":  `[{"name":"POD_NAME","value":"pod","secret":"x"}]`,
+		"duplicate":      `[{"name":"POD_NAME","value":"a"},{"name":"POD_NAME","value":"b"}]`,
+		"reserved host":  `[{"name":"KUBERNETES_SERVICE_HOST","value":"api.default.svc"}]`,
+		"reserved token": `[{"name":"COLLECTOR_VALIDATOR_ENV_FILE","value":"other"}]`,
+		"newline":        "[{\"name\":\"POD_NAME\",\"value\":\"pod\\nLEAK=value\"}]",
+		"empty value":    `[{"name":"POD_NAME","value":""}]`,
+		"invalid name":   `[{"name":"BAD-NAME","value":"x"}]`,
+	}
+	for name, content := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "environment.json")
+			t.Setenv(collectorValidatorEnvironmentFileVariable, path)
+			writeValidationEnvironment(t, path, content)
+			if _, err := collectorValidationVariables(); err == nil {
+				t.Fatalf("expected invalid environment file to fail closed: %s", content)
+			}
+		})
+	}
+}
+
 func TestCollectorConfigReferencesAllowExplicitEnvironmentPlaceholders(t *testing.T) {
+	t.Setenv(collectorValidatorEnvironmentFileVariable, "")
 	body := `receivers:
   kubeletstats:
     endpoint: ${env:K8S_NODE_IP}:10250
@@ -104,6 +181,7 @@ service:
   telemetry:
     resource:
       service.instance.id: ${env:POD_NAME}
+      k8s.pod.name: ${env:K8S_POD_NAME}
       k8s.node.name: ${env:K8S_NODE_NAME}
 `
 
@@ -112,18 +190,51 @@ service:
 	}
 }
 
-func TestCollectorPreflightDoesNotRestrictCollectorComponents(t *testing.T) {
-	body, err := os.ReadFile("testdata/collector-filter-debug.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestCollectorConfigReferencesUseConfiguredAllowlist(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "environment.json")
+	t.Setenv(collectorValidatorEnvironmentFileVariable, path)
+	writeValidationEnvironment(t, path, `[
+  {"name":"POD_NAME","value":"validation-pod"},
+  {"name":"OTEL_RESOURCE_ATTRIBUTES","value":"k8s.cluster.name=validation"}
+]`)
 
-	if err := validateCollectorConfigReferences(string(body)); err != nil {
-		t.Fatalf("component compatibility must be delegated to otelcol-contrib: %v", err)
+	if err := validateCollectorConfigReferences(
+		`resource: ${env:OTEL_RESOURCE_ATTRIBUTES}`,
+	); err != nil {
+		t.Fatalf("configured environment placeholder must be accepted: %v", err)
+	}
+	err := validateCollectorConfigReferences(`node: ${env:K8S_NODE_NAME}`)
+	if err == nil {
+		t.Fatal("an environment placeholder absent from the configured allowlist was accepted")
+	}
+	if !strings.Contains(err.Error(), "${env:OTEL_RESOURCE_ATTRIBUTES}") ||
+		strings.Contains(err.Error(), "${env:K8S_NODE_NAME}") {
+		t.Fatalf("rejection must describe the current allowlist: %v", err)
+	}
+}
+
+func TestCollectorPreflightDoesNotRestrictCollectorComponents(t *testing.T) {
+	t.Setenv(collectorValidatorEnvironmentFileVariable, "")
+	for _, fixture := range []string{
+		"testdata/collector-filter-debug.yaml",
+		"testdata/collector-kubernetes-infra.yaml",
+	} {
+		body, err := os.ReadFile(fixture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateCollectorConfigReferences(string(body)); err != nil {
+			t.Fatalf(
+				"%s component compatibility must be delegated to otelcol-contrib: %v",
+				fixture,
+				err,
+			)
+		}
 	}
 }
 
 func TestCollectorConfigReferencesRejectUnsafeProvidersAndAmbiguousForms(t *testing.T) {
+	t.Setenv(collectorValidatorEnvironmentFileVariable, "")
 	tests := map[string]string{
 		"file provider":         `${file:/etc/passwd}`,
 		"HTTP provider":         `${http:http://169.254.169.254/latest/meta-data}`,
@@ -146,7 +257,7 @@ func TestCollectorConfigReferencesRejectUnsafeProvidersAndAmbiguousForms(t *test
 			if err == nil {
 				t.Fatalf("expected %q to be rejected", body)
 			}
-			if !strings.Contains(err.Error(), "may only use ${env:POD_NAME}") {
+			if !strings.Contains(err.Error(), "Collector configuration may only use") {
 				t.Fatalf("unexpected rejection message: %v", err)
 			}
 		})
@@ -154,6 +265,7 @@ func TestCollectorConfigReferencesRejectUnsafeProvidersAndAmbiguousForms(t *test
 }
 
 func TestUnsafeCollectorReferenceIsRejectedBeforeStartingValidator(t *testing.T) {
+	t.Setenv(collectorValidatorEnvironmentFileVariable, "")
 	result, err := validateCollectorWithBinary(
 		context.Background(),
 		"exporters:\n  debug:\n    verbosity: ${file:/etc/hostname}\n",
@@ -236,6 +348,13 @@ func TestCollectorValidatorPathRejectsNonExecutableFiles(t *testing.T) {
 func writeExecutable(t *testing.T, path string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeValidationEnvironment(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }

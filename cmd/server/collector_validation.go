@@ -5,31 +5,53 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
 
 const maxCollectorValidationOutput = 32 << 10
+const maxCollectorValidationEnvironmentFile = 64 << 10
+const maxCollectorValidationVariables = 32
+const maxCollectorValidationVariableValue = 1024
 const collectorValidatorExecutable = "/otelcol-contrib"
+const collectorValidatorEnvironmentFileVariable = "COLLECTOR_VALIDATOR_ENV_FILE"
 
 var collectorEnvironmentName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-var allowedCollectorEnvironment = map[string]bool{
-	"POD_NAME":      true,
-	"K8S_NODE_NAME": true,
-	"K8S_NODE_IP":   true,
+var defaultCollectorValidationVariables = []collectorValidationVariable{
+	{Name: "POD_NAME", Value: "o11y-validation-pod"},
+	{Name: "K8S_POD_NAME", Value: "o11y-validation-pod"},
+	{Name: "K8S_NODE_NAME", Value: "o11y-validation-node"},
+	{Name: "K8S_NODE_IP", Value: "127.0.0.1"},
+}
+
+var reservedCollectorValidationEnvironment = map[string]bool{
+	"HOME":                          true,
+	"TMPDIR":                        true,
+	"KUBERNETES_SERVICE_HOST":       true,
+	"KUBERNETES_SERVICE_PORT":       true,
+	"KUBERNETES_SERVICE_PORT_HTTPS": true,
+	"KUBERNETES_PORT":               true,
+	"COLLECTOR_VALIDATOR_ENV_FILE":  true,
 }
 
 type collectorValidationResult struct {
 	Valid            bool   `json:"valid"`
 	ValidatorVersion string `json:"validatorVersion"`
 	Output           string `json:"output,omitempty"`
+}
+
+type collectorValidationVariable struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 var collectorValidator = validateCollectorWithBinary
@@ -43,7 +65,11 @@ func collectorValidatorVersion() string {
 
 func validateCollectorWithBinary(parent context.Context, body string) (collectorValidationResult, error) {
 	result := collectorValidationResult{ValidatorVersion: collectorValidatorVersion()}
-	if err := validateCollectorConfigReferences(body); err != nil {
+	variables, err := collectorValidationVariables()
+	if err != nil {
+		return result, fmt.Errorf("load Collector validation environment: %w", err)
+	}
+	if err := validateCollectorConfigReferencesWithVariables(body, variables); err != nil {
 		result.Output = err.Error()
 		return result, nil
 	}
@@ -78,7 +104,7 @@ func validateCollectorWithBinary(parent context.Context, body string) (collector
 		name,
 	)
 	// Do not expose Control Plane credentials to Collector config expansion.
-	command.Env = collectorValidationEnvironment()
+	command.Env = collectorValidationProcessEnvironment(variables)
 	output, commandErr := command.CombinedOutput()
 	if len(output) > maxCollectorValidationOutput {
 		output = output[:maxCollectorValidationOutput]
@@ -144,6 +170,21 @@ func resolveCollectorValidatorPath(primary, bundled string) (string, error) {
 // receives a deliberately small environment, so explicit env references are the
 // only supported expansion mechanism.
 func validateCollectorConfigReferences(body string) error {
+	variables, err := collectorValidationVariables()
+	if err != nil {
+		return fmt.Errorf("load Collector validation environment: %w", err)
+	}
+	return validateCollectorConfigReferencesWithVariables(body, variables)
+}
+
+func validateCollectorConfigReferencesWithVariables(
+	body string,
+	variables []collectorValidationVariable,
+) error {
+	allowed := make(map[string]bool, len(variables))
+	for _, variable := range variables {
+		allowed[variable.Name] = true
+	}
 	for offset := 0; offset < len(body); {
 		relativeStart := strings.Index(body[offset:], "${")
 		if relativeStart < 0 {
@@ -151,39 +192,116 @@ func validateCollectorConfigReferences(body string) error {
 		}
 		start := offset + relativeStart
 		if start > 0 && (body[start-1] == '$' || body[start-1] == '\\') {
-			return collectorConfigReferenceError()
+			return collectorConfigReferenceError(variables)
 		}
 
 		relativeEnd := strings.IndexByte(body[start+2:], '}')
 		if relativeEnd < 0 {
-			return collectorConfigReferenceError()
+			return collectorConfigReferenceError(variables)
 		}
 		end := start + 2 + relativeEnd
 		reference := body[start+2 : end]
 		if strings.Contains(reference, "${") || !strings.HasPrefix(reference, "env:") {
-			return collectorConfigReferenceError()
+			return collectorConfigReferenceError(variables)
 		}
 		name := strings.TrimPrefix(reference, "env:")
-		if !collectorEnvironmentName.MatchString(name) || !allowedCollectorEnvironment[name] {
-			return collectorConfigReferenceError()
+		if !collectorEnvironmentName.MatchString(name) || !allowed[name] {
+			return collectorConfigReferenceError(variables)
 		}
 		offset = end + 1
 	}
 	return nil
 }
 
-func collectorConfigReferenceError() error {
-	return errors.New("Collector configuration may only use ${env:POD_NAME}, ${env:K8S_NODE_NAME}, or ${env:K8S_NODE_IP}; secret, shorthand, escaped, nested, file, HTTP, and HTTPS references are not allowed")
+func collectorConfigReferenceError(variables []collectorValidationVariable) error {
+	names := make([]string, 0, len(variables))
+	for _, variable := range variables {
+		names = append(names, fmt.Sprintf("${env:%s}", variable.Name))
+	}
+	sort.Strings(names)
+	return fmt.Errorf(
+		"Collector configuration may only use %s; secret, shorthand, escaped, nested, file, HTTP, and HTTPS references are not allowed",
+		strings.Join(names, ", "),
+	)
 }
 
-func collectorValidationEnvironment() []string {
-	return []string{
+func collectorValidationVariables() ([]collectorValidationVariable, error) {
+	path := strings.TrimSpace(os.Getenv(collectorValidatorEnvironmentFileVariable))
+	if path == "" {
+		return append([]collectorValidationVariable(nil), defaultCollectorValidationVariables...), nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open configured environment file: %w", err)
+	}
+	defer file.Close()
+	limited := io.LimitReader(file, maxCollectorValidationEnvironmentFile+1)
+	content, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, fmt.Errorf("read configured environment file: %w", err)
+	}
+	if len(content) > maxCollectorValidationEnvironmentFile {
+		return nil, errors.New("configured environment file is too large")
+	}
+	var variables []collectorValidationVariable
+	decoder := json.NewDecoder(strings.NewReader(string(content)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&variables); err != nil {
+		return nil, fmt.Errorf("decode configured environment file: %w", err)
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return nil, errors.New("configured environment file must contain one JSON document")
+	}
+	if err := validateCollectorValidationVariables(variables); err != nil {
+		return nil, err
+	}
+	return variables, nil
+}
+
+func validateCollectorValidationVariables(variables []collectorValidationVariable) error {
+	if len(variables) == 0 {
+		return errors.New("configured environment allowlist cannot be empty")
+	}
+	if len(variables) > maxCollectorValidationVariables {
+		return fmt.Errorf(
+			"configured environment allowlist exceeds %d entries",
+			maxCollectorValidationVariables,
+		)
+	}
+	seen := make(map[string]bool, len(variables))
+	for _, variable := range variables {
+		if !collectorEnvironmentName.MatchString(variable.Name) {
+			return fmt.Errorf("invalid configured environment name %q", variable.Name)
+		}
+		if reservedCollectorValidationEnvironment[variable.Name] {
+			return fmt.Errorf("configured environment name %q is reserved", variable.Name)
+		}
+		if seen[variable.Name] {
+			return fmt.Errorf("configured environment name %q is duplicated", variable.Name)
+		}
+		if variable.Value == "" {
+			return fmt.Errorf("configured environment value for %q cannot be empty", variable.Name)
+		}
+		if len(variable.Value) > maxCollectorValidationVariableValue ||
+			strings.ContainsAny(variable.Value, "\x00\r\n") {
+			return fmt.Errorf("configured environment value for %q is invalid", variable.Name)
+		}
+		seen[variable.Name] = true
+	}
+	return nil
+}
+
+func collectorValidationProcessEnvironment(variables []collectorValidationVariable) []string {
+	environment := []string{
 		"HOME=/tmp",
 		"TMPDIR=/tmp",
-		"POD_NAME=o11y-validation-pod",
-		"K8S_NODE_NAME=o11y-validation-node",
-		"K8S_NODE_IP=127.0.0.1",
+		"KUBERNETES_SERVICE_HOST=127.0.0.1",
+		"KUBERNETES_SERVICE_PORT=443",
 	}
+	for _, variable := range variables {
+		environment = append(environment, variable.Name+"="+variable.Value)
+	}
+	return environment
 }
 
 func collectorValidation(w http.ResponseWriter, r *http.Request) {

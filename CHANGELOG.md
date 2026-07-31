@@ -5,6 +5,23 @@ Las versiones siguen Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.25.6-opamp.0.23.0-otelcol.0.156.0] - 2026-07-30
+
+### Added
+
+- La allowlist de variables del validador se proyecta desde un ConfigMap y se
+  configura con `validator.allowedEnvironment` en los values de Helm.
+- El E2E real valida una configuración de infraestructura con receivers,
+  processors y extensiones Kubernetes que usan `serviceAccount`.
+
+### Fixed
+
+- El validador incorpora un serviceAccount sintético sin acceso al API server,
+  por lo que `kubelet_stats`, `k8s_cluster`, `k8s_events`, `k8s_objects`,
+  `k8s_attributes` y `k8s_leader_elector` pueden construir su configuración sin
+  heredar credenciales del Control Plane.
+- `K8S_POD_NAME` forma parte de la allowlist predeterminada.
+
 ## [0.25.5-opamp.0.23.0-otelcol.0.156.0] - 2026-07-30
 
 ### Changed
