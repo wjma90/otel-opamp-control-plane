@@ -6622,7 +6622,7 @@ function App() {
       setAuditEvents(auditData);
       setStorage(storageData);
       setSecurityDenylist(securityData);
-      setDeployments(deploymentData);
+      setDeployments(Array.isArray(deploymentData) ? deploymentData : []);
       isolatePolicyDraft(identityData);
       setAuthIdentity(identityData);
       setAccessModel(accessData);
@@ -6658,7 +6658,7 @@ function App() {
       if (!liveLoadGate.current.isCurrent(sequence)) return;
       setAgents(agentData);
       setConfigs(configData);
-      setDeployments(deploymentData);
+      setDeployments(Array.isArray(deploymentData) ? deploymentData : []);
       setCollectorBases(collectorBaseData);
     } catch {
       // Preserve the last good live state. Manual refresh still reports errors.

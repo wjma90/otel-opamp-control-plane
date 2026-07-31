@@ -2227,7 +2227,7 @@ func deploymentRecordsWithLiveCoverage(
 	configs map[string][]Config,
 	now time.Time,
 ) []DeploymentRecord {
-	result := append([]DeploymentRecord(nil), records...)
+	result := append([]DeploymentRecord{}, records...)
 	known := make(map[string]struct{}, len(result))
 	for index := range result {
 		record := &result[index]

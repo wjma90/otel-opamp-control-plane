@@ -2,7 +2,7 @@ name: o11y-control-plane-local
 
 services:
   postgres:
-    image: postgres:18.4-alpine
+    image: postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
     environment:
       POSTGRES_DB: o11y_control_plane_local
       POSTGRES_USER: o11y_local
@@ -18,6 +18,32 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+    security_opt:
+      - no-new-privileges:true
+
+  control-plane:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: o11y-control-plane:local
+    environment:
+      DATABASE_URL: postgres://o11y_local:o11y-local-password@postgres:5432/o11y_control_plane_local?sslmode=disable
+      MASTER_USERNAME: o11y-admin
+      MASTER_PASSWORD: o11y-local-admin-password
+      MASTER_EMAIL: local-admin@example.test
+      AUTH_SIGNING_KEY: o11y-local-signing-key-for-integration-tests-only
+      OPAMP_AUTH_MODE: disabled
+      SERVER_PUBLIC_URL: http://127.0.0.1:18080
+      OPAMP_PUBLIC_URL: http://127.0.0.1:14320/v1/opamp
+    ports:
+      - 127.0.0.1:18080:8080
+      - 127.0.0.1:14320:4320
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    depends_on:
+      postgres:
+        condition: service_healthy
     security_opt:
       - no-new-privileges:true
 
@@ -38,4 +64,3 @@ services:
       - /tmp:rw,noexec,nosuid,size=16m
     security_opt:
       - no-new-privileges:true
-

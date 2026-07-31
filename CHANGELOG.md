@@ -5,6 +5,19 @@ Las versiones siguen Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.25.5-opamp.0.23.0-otelcol.0.156.0] - 2026-07-30
+
+### Changed
+
+- El release queda bloqueado por un E2E de navegador sobre la imagen actual
+  del Control Plane y PostgreSQL real levantados con Docker Compose.
+
+### Fixed
+
+- Gestión remota muestra correctamente el estado inicial sin policies ni
+  configuraciones publicadas; `/api/deployments` responde `[]` en vez de
+  `null`.
+
 ## [0.25.4-opamp.0.23.0-otelcol.0.156.0] - 2026-07-30
 
 ### Changed

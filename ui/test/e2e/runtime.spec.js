@@ -119,3 +119,47 @@ test("the production bundle renders the authenticated Fleet without browser erro
   await expect(page).toHaveURL(/\/agents$/);
   await expect(page.getByRole("heading", { name: "Clientes OpAMP" })).toBeVisible();
 });
+
+test("remote management renders an empty deployment response without browser errors", async ({
+  page,
+}) => {
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+
+  const responses = new Map([
+    ["/api/agents", []],
+    ["/api/configs", {}],
+    ["/api/metric-names", []],
+    ["/api/audit", []],
+    ["/api/storage", { driver: "PostgreSQL", status: "ready" }],
+    ["/api/security/denylist", []],
+    ["/api/deployments", null],
+    ["/api/auth/session", identity],
+    ["/api/auth/providers", {
+      identity,
+      providers: [],
+      roles: {},
+      assignableRoles: [],
+      roleMappings: {},
+      configurations: [],
+    }],
+    ["/api/collector-base-configs", []],
+  ]);
+
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    await route.fulfill(json(responses.has(path) ? responses.get(path) : {}));
+  });
+
+  await page.goto("/remote-management");
+
+  await expect(page.getByRole("heading", {
+    name: "Policies y configuraciones",
+  })).toBeVisible();
+  await expect(page.getByText(
+    "No hay configuraciones Collector administradas que coincidan.",
+  )).toBeVisible();
+  await expect(page.getByText("No hay policies que coincidan.")).toBeVisible();
+  await expect(page.locator("#root")).not.toBeEmpty();
+  expect(pageErrors, "uncaught browser errors").toEqual([]);
+});

@@ -213,6 +213,52 @@ jobs:
           O11Y_TEST_DATABASE_URL: postgres://o11y_test:o11y-test-password@127.0.0.1:5432/o11y_test?sslmode=disable
         run: go test -count=1 -tags=integration ./...
 
+  full-stack-e2e:
+    name: Browser E2E with real backend and PostgreSQL
+    needs:
+      - verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install browser test dependencies
+        working-directory: ui
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Start the current Control Plane and PostgreSQL
+        run: |
+          docker compose -f compose.local.yaml up \
+            --detach --build postgres control-plane
+          curl --fail --silent --show-error \
+            --retry 30 --retry-delay 2 --retry-all-errors \
+            http://127.0.0.1:18080/readyz
+
+      - name: Run Playwright against the real stack
+        working-directory: ui
+        env:
+          O11Y_E2E_BASE_URL: http://127.0.0.1:18080/
+          O11Y_E2E_USERNAME: o11y-admin
+          O11Y_E2E_PASSWORD: o11y-local-admin-password
+        run: npm run test:e2e:live
+
+      - name: Show full-stack logs on failure
+        if: failure()
+        run: docker compose -f compose.local.yaml logs --no-color
+
+      - name: Stop the full stack
+        if: always()
+        run: docker compose -f compose.local.yaml down --volumes --remove-orphans
+
   source-security:
     name: Semgrep and Trivy source scans
     runs-on: ubuntu-latest
@@ -393,6 +439,7 @@ jobs:
   packages:
     name: Linux ${{ matrix.arch }} package
     needs:
+      - full-stack-e2e
       - metadata
       - source-security
       - verify
@@ -469,6 +516,7 @@ jobs:
   chart:
     name: Validate and package Helm chart
     needs:
+      - full-stack-e2e
       - metadata
       - source-security
       - verify
@@ -552,6 +600,7 @@ jobs:
     name: Publish multi-architecture image
     if: startsWith(github.ref, 'refs/tags/v')
     needs:
+      - full-stack-e2e
       - metadata
       - source-security
       - verify

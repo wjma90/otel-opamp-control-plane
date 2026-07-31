@@ -1,9 +1,29 @@
 package main
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
+
+func TestDeploymentCoverageEmptyStateEncodesAsJSONArray(t *testing.T) {
+	records := deploymentRecordsWithLiveCoverage(
+		nil,
+		map[string]Agent{},
+		map[string][]Config{},
+		time.Now().UTC(),
+	)
+	if records == nil {
+		t.Fatal("empty deployment coverage must be a non-nil slice")
+	}
+	body, err := json.Marshal(records)
+	if err != nil {
+		t.Fatalf("encode empty deployment coverage: %v", err)
+	}
+	if string(body) != "[]" {
+		t.Fatalf("empty deployment coverage encoded as %s, want []", body)
+	}
+}
 
 func TestDeploymentCoverageIgnoresHistoricalUIDWhenLiveReplicaMatches(t *testing.T) {
 	now := time.Now().UTC()

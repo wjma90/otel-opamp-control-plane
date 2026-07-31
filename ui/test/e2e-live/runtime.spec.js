@@ -21,18 +21,18 @@ const isGoogleResource = (requestURL) => {
     hostname.endsWith(".googleusercontent.com");
 };
 
-test("the deployed Control Plane logs in and renders Fleet without browser failures", async ({ page }) => {
+const observeBrowserFailures = (page) => {
   const pageErrors = [];
   const consoleErrors = [];
   const googleResources = [];
-  let authenticated = false;
+  const state = { authenticated: false };
 
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
     const text = message.text();
     if (
       message.type() === "error" &&
-      (authenticated || text.includes("Content Security Policy"))
+      (state.authenticated || text.includes("Content Security Policy"))
     ) {
       consoleErrors.push(text);
     }
@@ -41,7 +41,20 @@ test("the deployed Control Plane logs in and renders Fleet without browser failu
     if (isGoogleResource(request.url())) googleResources.push(request.url());
   });
 
-  const documentResponse = await page.goto("/?tab=agents", {
+  return {
+    markAuthenticated: () => {
+      state.authenticated = true;
+    },
+    assertClean: () => {
+      expect(pageErrors, "uncaught browser errors").toEqual([]);
+      expect(consoleErrors, "console errors").toEqual([]);
+      expect(googleResources, "Google-hosted runtime resources").toEqual([]);
+    },
+  };
+};
+
+const login = async (page, path) => {
+  const documentResponse = await page.goto(path, {
     waitUntil: "domcontentloaded",
   });
   expect(documentResponse?.ok(), "the deployed UI document must be reachable").toBeTruthy();
@@ -61,14 +74,33 @@ test("the deployed Control Plane logs in and renders Fleet without browser failu
     loginResponse.ok(),
     `local login returned HTTP ${loginResponse.status()}`,
   ).toBeTruthy();
-  authenticated = true;
+};
+
+test("the deployed Control Plane logs in and renders Fleet without browser failures", async ({ page }) => {
+  const browser = observeBrowserFailures(page);
+  await login(page, "/?tab=agents");
+  browser.markAuthenticated();
 
   await expect(page.getByRole("heading", { name: "Clientes OpAMP" })).toBeVisible();
   // Fleet polls continuously, so this page intentionally never reaches networkidle.
   await page.waitForTimeout(1_000);
 
   await expect(page.locator("#root")).not.toBeEmpty();
-  expect(pageErrors, "uncaught browser errors").toEqual([]);
-  expect(consoleErrors, "console errors").toEqual([]);
-  expect(googleResources, "Google-hosted runtime resources").toEqual([]);
+  browser.assertClean();
+});
+
+test("the deployed Control Plane renders an empty remote-management state", async ({ page }) => {
+  const browser = observeBrowserFailures(page);
+  await login(page, "/remote-management");
+  browser.markAuthenticated();
+
+  await expect(page.getByRole("heading", {
+    name: "Policies y configuraciones",
+  })).toBeVisible();
+  await expect(page.getByText(
+    "No hay configuraciones Collector administradas que coincidan.",
+  )).toBeVisible();
+  await expect(page.getByText("No hay policies que coincidan.")).toBeVisible();
+  await expect(page.locator("#root")).not.toBeEmpty();
+  browser.assertClean();
 });
